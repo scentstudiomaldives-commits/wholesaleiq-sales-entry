@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useMemo, useContext, createContext, useRef } from "react";
+import React, { useState, useEffect, useMemo, useContext, createContext, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "../../lib/supabaseClient";
 import Papa from "papaparse";
@@ -39,6 +39,17 @@ const toNum = (v, def = 0) => { if (v === undefined || v === null || v === "") r
 const toBool = (v) => /^(y|yes|true|1)$/i.test(String(v || "").trim());
 
 function seededRandom(seed) { let s = seed; return () => { s = (s * 9301 + 49297) % 233280; return s / 233280; }; }
+
+function useIsMobile(breakpoint = 860) {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < breakpoint);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, [breakpoint]);
+  return isMobile;
+}
 const rnd = seededRandom(Date.now() % 100000); // reseeded each page load so demo figures visibly differ from real data
 const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
 const range = (n) => Array.from({ length: n }, (_, i) => i);
@@ -444,7 +455,7 @@ function KpiCard({ label, value, sub, trend, tone = "neutral", icon: Icon }) {
 }
 function Card({ title, subtitle, children, style, right }) {
   return (
-    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.line}`, borderRadius: 16, padding: "18px 20px", ...style }}>
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.line}`, borderRadius: 16, padding: "18px 20px", minWidth: 0, overflowX: "auto", ...style }}>
       {(title || right) && (
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 14 }}>
           <div>
@@ -589,6 +600,8 @@ function UploadPanel({ open, onClose, meta, errors, onFile, onReset }) {
 export default function App({ profile, liveCustomerRows, liveTrendRows, initialSkuRows, initialStockRows }) {
   const router = useRouter();
   const supabase = createClient();
+  const isMobile = useIsMobile();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [page, setPage] = useState("executive");
   const [selectedRegion, setSelectedRegion] = useState(null);
   const [selectedArea, setSelectedArea] = useState(null);
@@ -696,14 +709,22 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
           * { box-sizing: border-box; }
           ::-webkit-scrollbar { width: 8px; height: 8px; }
           ::-webkit-scrollbar-thumb { background: #C7D3E2; border-radius: 8px; }
-          table { border-collapse: collapse; width: 100%; }
+          table { border-collapse: collapse; width: 100%; min-width: 620px; }
           tr:hover td { background: #FAFCFF; }
           .navitem:hover { background: rgba(255,255,255,0.06) !important; }
           .rowclick:hover { cursor: pointer; background: #F5F9FF !important; }
         `}</style>
 
-        <div style={{ width: 246, background: `linear-gradient(180deg, ${COLORS.navy} 0%, ${COLORS.navyLight} 100%)`, display: "flex", flexDirection: "column", flexShrink: 0, position: "sticky", top: 0, height: "100vh" }}>
-          <div style={{ padding: "22px 20px 18px", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+        <div
+          style={{
+            width: 246, background: `linear-gradient(180deg, ${COLORS.navy} 0%, ${COLORS.navyLight} 100%)`,
+            display: "flex", flexDirection: "column", flexShrink: 0, height: "100vh",
+            position: isMobile ? "fixed" : "sticky", top: 0, left: 0, zIndex: 40,
+            transform: isMobile ? (sidebarOpen ? "translateX(0)" : "translateX(-100%)") : "none",
+            transition: "transform .2s ease",
+          }}
+        >
+          <div style={{ padding: "22px 20px 18px", borderBottom: "1px solid rgba(255,255,255,0.08)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
               <div style={{ width: 32, height: 32, borderRadius: 9, background: COLORS.blue, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Manrope, sans-serif", fontWeight: 800, color: "#fff", fontSize: 14 }}>W</div>
               <div>
@@ -711,12 +732,13 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
                 <div style={{ fontFamily: "Inter, sans-serif", fontSize: 10.5, color: "#8FA8C4", fontWeight: 600, letterSpacing: 0.3 }}>ATOLL DISTRIBUTION</div>
               </div>
             </div>
+            {isMobile && <X size={18} color="#B9C9DC" style={{ cursor: "pointer" }} onClick={() => setSidebarOpen(false)} />}
           </div>
           <div style={{ flex: 1, overflowY: "auto", padding: "12px 10px" }}>
             {NAV.map((n) => {
               const active = page === n.id; const Icon = n.icon;
               return (
-                <div key={n.id} className="navitem" onClick={() => setPage(n.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, marginBottom: 3, cursor: "pointer", background: active ? "rgba(31,111,235,0.22)" : "transparent", borderLeft: active ? `3px solid ${COLORS.blue}` : "3px solid transparent" }}>
+                <div key={n.id} className="navitem" onClick={() => { setPage(n.id); setSidebarOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, marginBottom: 3, cursor: "pointer", background: active ? "rgba(31,111,235,0.22)" : "transparent", borderLeft: active ? `3px solid ${COLORS.blue}` : "3px solid transparent" }}>
                   <Icon size={16} color={active ? "#fff" : "#8FA8C4"} />
                   <span style={{ fontFamily: "Inter, sans-serif", fontSize: 12.8, fontWeight: active ? 700 : 500, color: active ? "#fff" : "#B9C9DC" }}>{n.label}</span>
                 </div>
@@ -743,18 +765,32 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
             </div>
           </div>
         </div>
+        {isMobile && sidebarOpen && (
+          <div onClick={() => setSidebarOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(11,32,54,0.45)", zIndex: 35 }} />
+        )}
 
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-          <div style={{ background: COLORS.surface, borderBottom: `1px solid ${COLORS.line}`, padding: "13px 26px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", position: "sticky", top: 0, zIndex: 5 }}>
-            <div style={{ fontFamily: "Manrope, sans-serif", fontSize: 17, fontWeight: 800, color: COLORS.textPrimary, marginRight: 8 }}>{NAV.find((n) => n.id === page)?.label}</div>
+          <div style={{ background: COLORS.surface, borderBottom: `1px solid ${COLORS.line}`, padding: isMobile ? "12px 14px" : "13px 26px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", position: "sticky", top: 0, zIndex: 5 }}>
+            {isMobile && (
+              <div onClick={() => setSidebarOpen(true)} style={{ display: "flex", flexDirection: "column", gap: 3, cursor: "pointer", padding: 6 }}>
+                <span style={{ width: 18, height: 2, background: COLORS.textPrimary, borderRadius: 2 }} />
+                <span style={{ width: 18, height: 2, background: COLORS.textPrimary, borderRadius: 2 }} />
+                <span style={{ width: 18, height: 2, background: COLORS.textPrimary, borderRadius: 2 }} />
+              </div>
+            )}
+            <div style={{ fontFamily: "Manrope, sans-serif", fontSize: isMobile ? 15 : 17, fontWeight: 800, color: COLORS.textPrimary, marginRight: 8 }}>{NAV.find((n) => n.id === page)?.label}</div>
             <div style={{ flex: 1 }} />
-            <SlicerChip icon={Calendar} label="Current Period" />
-            <SlicerChip icon={MapIcon} label={region ? region.name : "All Regions"} onClear={region ? () => { setSelectedRegion(null); setSelectedArea(null); } : null} />
-            {area && <SlicerChip icon={Building2} label={area.name} onClear={() => setSelectedArea(null)} />}
-            <SlicerChip icon={Filter} label="Status: Active" />
+            {!isMobile && (
+              <>
+                <SlicerChip icon={Calendar} label="Current Period" />
+                <SlicerChip icon={MapIcon} label={region ? region.name : "All Regions"} onClear={region ? () => { setSelectedRegion(null); setSelectedArea(null); } : null} />
+                {area && <SlicerChip icon={Building2} label={area.name} onClear={() => setSelectedArea(null)} />}
+                <SlicerChip icon={Filter} label="Status: Active" />
+              </>
+            )}
             <div style={{ position: "relative" }}>
               <Search size={13} style={{ position: "absolute", left: 10, top: 9, color: COLORS.textMuted }} />
-              <input placeholder="Search customer, SKU, rep…" value={custSearch} onChange={(e) => setCustSearch(e.target.value)} style={{ padding: "7px 10px 7px 28px", borderRadius: 9, border: `1px solid ${COLORS.line}`, fontSize: 12.5, fontFamily: "Inter, sans-serif", width: 200, outline: "none" }} />
+              <input placeholder={isMobile ? "Search…" : "Search customer, SKU, rep…"} value={custSearch} onChange={(e) => setCustSearch(e.target.value)} style={{ padding: "7px 10px 7px 28px", borderRadius: 9, border: `1px solid ${COLORS.line}`, fontSize: 12.5, fontFamily: "Inter, sans-serif", width: isMobile ? 110 : 200, outline: "none" }} />
             </div>
             <div
               onClick={() => setUploadOpen(true)}
@@ -770,7 +806,7 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
             </div>
           </div>
 
-          <div style={{ padding: "22px 26px 60px", flex: 1 }}>
+          <div style={{ padding: isMobile ? "14px 12px 40px" : "22px 26px 60px", flex: 1, minWidth: 0 }}>
             {page === "executive" && <ExecutivePage alerts={alerts} goRegion={goRegion} drillCustomer={drillCustomer} />}
             {page === "regional" && <RegionalPage region={region} drillRegion={drillRegion} />}
             {page === "area" && <AreaPage region={region} area={area} drillArea={drillArea} drillCustomer={drillCustomer} setSelectedRegion={setSelectedRegion} />}
@@ -803,6 +839,7 @@ function SlicerChip({ icon: Icon, label, onClear }) {
    EXECUTIVE DASHBOARD
 ------------------------------------------------------------------*/
 function ExecutivePage({ alerts, goRegion, drillCustomer }) {
+  const isMobile = useIsMobile();
   const { REGIONS, TOTAL_SALES, TOTAL_TARGET, TOTAL_GP, TOTAL_CUSTOMERS, ACTIVE_CUSTOMERS, AVG_PORTFOLIO, TREND, BRAND_DIST, SKUS, CATEGORY_SALES, ALL_CUSTOMERS, trendEstimated } = useContext(DataContext);
   const achievement = TOTAL_TARGET ? Math.round((TOTAL_SALES / TOTAL_TARGET) * 100) : 0;
   const gpPct = TOTAL_SALES ? Math.round((TOTAL_GP / TOTAL_SALES) * 1000) / 10 : 0;
@@ -812,7 +849,7 @@ function ExecutivePage({ alerts, goRegion, drillCustomer }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(6, 1fr)", gap: 14 }}>
         <KpiCard label="Total Sales (MTD)" value={fmtShort(TOTAL_SALES)} sub="current snapshot" icon={LayoutDashboard} />
         <KpiCard label="Sales Target" value={fmtShort(TOTAL_TARGET)} tone="neutral" />
         <KpiCard label="Target Achievement" value={pct(achievement)} tone={achievement >= 95 ? "good" : achievement >= 85 ? "warn" : "bad"} icon={CheckCircle2} />
@@ -820,7 +857,7 @@ function ExecutivePage({ alerts, goRegion, drillCustomer }) {
         <KpiCard label="GP %" value={pct(gpPct)} sub="blended margin" tone="good" />
         <KpiCard label="Out of Stock Alerts" value={outOfStockAlerts} sub="SKUs affected" tone="bad" icon={AlertTriangle} />
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(6, 1fr)", gap: 14 }}>
         <KpiCard label="Total Customers" value={TOTAL_CUSTOMERS} icon={Users} />
         <KpiCard label="Active Customers" value={ACTIVE_CUSTOMERS} sub={TOTAL_CUSTOMERS ? `${Math.round((ACTIVE_CUSTOMERS / TOTAL_CUSTOMERS) * 100)}% of base` : ""} tone="good" />
         <KpiCard label="Total Regions" value={REGIONS.length} icon={MapIcon} />
@@ -829,7 +866,7 @@ function ExecutivePage({ alerts, goRegion, drillCustomer }) {
         <KpiCard label="Customer Coverage" value={pct(TOTAL_CUSTOMERS ? Math.round((ACTIVE_CUSTOMERS / TOTAL_CUSTOMERS) * 100) : 0)} tone="good" />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.4fr 1fr", gap: 14 }}>
         <Card title="Monthly Sales Trend vs Target" subtitle={trendEstimated ? "Estimated from current snapshot — upload a trend file for real history" : "From uploaded monthly trend data"}>
           <ResponsiveContainer width="100%" height={230}>
             <ComposedChart data={TREND}>
@@ -857,7 +894,7 @@ function ExecutivePage({ alerts, goRegion, drillCustomer }) {
         </Card>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 14 }}>
         <Card title="Sales by Region" subtitle="Click a bar to drill in">
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={REGIONS} layout="vertical" margin={{ left: 10 }}>
@@ -900,7 +937,7 @@ function ExecutivePage({ alerts, goRegion, drillCustomer }) {
         </Card>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 14 }}>
         <Card title="Top 10 Customers"><RankList list={top10} tone="good" onClick={drillCustomer} /></Card>
         <Card title="Bottom 10 Customers"><RankList list={bottom10} tone="bad" onClick={drillCustomer} /></Card>
         <Card title="Customer Locations" subtitle="By atoll — dot size = monthly sales"><AtollMap /></Card>
@@ -952,10 +989,11 @@ function AtollMap() {
 }
 
 function AlertsPanel({ alerts }) {
+  const isMobile = useIsMobile();
   const grouped = alerts.reduce((acc, a) => { acc[a.type] = acc[a.type] || []; acc[a.type].push(a); return acc; }, {});
   return (
     <Card title="Automated Alerts" subtitle={`${alerts.length} conditions flagged across the customer base`}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: 10 }}>
         {Object.entries(grouped).map(([type, items]) => (
           <div key={type} style={{ border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: "12px 14px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
@@ -979,6 +1017,7 @@ function AlertsPanel({ alerts }) {
    REGIONAL PAGE
 ------------------------------------------------------------------*/
 function RegionalPage({ region, drillRegion }) {
+  const isMobile = useIsMobile();
   const { REGIONS } = useContext(DataContext);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -998,7 +1037,7 @@ function RegionalPage({ region, drillRegion }) {
           </tbody>
         </table>
       </Card>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14 }}>
         <Card title="Sales by Region">
           <ResponsiveContainer width="100%" height={230}>
             <BarChart data={REGIONS}>
@@ -1048,8 +1087,9 @@ function RegionalPage({ region, drillRegion }) {
   );
 }
 function RegionScorecards({ region }) {
+  const isMobile = useIsMobile();
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 14 }}>
+    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(5, 1fr)", gap: 14 }}>
       <KpiCard label="Total Sales" value={fmtShort(region.sales)} icon={LayoutDashboard} />
       <KpiCard label="Target" value={fmtShort(region.target)} />
       <KpiCard label="Achievement" value={pct(region.achievement)} tone={region.achievement >= 95 ? "good" : "warn"} />
@@ -1066,12 +1106,13 @@ function RegionScorecards({ region }) {
    AREA PAGE
 ------------------------------------------------------------------*/
 function AreaPage({ region, area, drillArea, drillCustomer, setSelectedRegion }) {
+  const isMobile = useIsMobile();
   const { REGIONS } = useContext(DataContext);
   if (!region) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
         <div style={{ fontFamily: "Inter", fontSize: 12.5, color: COLORS.textMuted }}>Select a region from the Regional Performance page, or click a region below, to see its areas.</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(5,1fr)", gap: 12 }}>
           {REGIONS.map((r) => (
             <div key={r.id} className="rowclick" onClick={() => setSelectedRegion(r.id)} style={{ background: COLORS.surface, border: `1px solid ${COLORS.line}`, borderRadius: 14, padding: 16 }}>
               <div style={{ fontWeight: 800, fontFamily: "Manrope", fontSize: 13.5, color: COLORS.textPrimary }}>{r.name}</div>
@@ -1099,7 +1140,7 @@ function AreaPage({ region, area, drillArea, drillCustomer, setSelectedRegion })
         </table>
       </Card>
       <Card title="Area Performance Heatmap" subtitle="Green = strong achievement, red = at risk">
-        <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(region.areas.length, 1)}, 1fr)`, gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : `repeat(${Math.max(region.areas.length, 1)}, 1fr)`, gap: 10 }}>
           {region.areas.map((a) => {
             const t = a.achievement >= 95 ? COLORS.green : a.achievement >= 85 ? COLORS.amber : COLORS.red;
             const soft = a.achievement >= 95 ? COLORS.greenSoft : a.achievement >= 85 ? COLORS.amberSoft : COLORS.redSoft;
@@ -1136,6 +1177,7 @@ function AreaPage({ region, area, drillArea, drillCustomer, setSelectedRegion })
    CUSTOMER PAGE
 ------------------------------------------------------------------*/
 function CustomerPage({ customer, search, drillCustomer }) {
+  const isMobile = useIsMobile();
   const { ALL_CUSTOMERS, TOTAL_CUSTOMERS, TREND, BRAND_DIST } = useContext(DataContext);
   const filtered = search ? ALL_CUSTOMERS.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()) || c.code.toLowerCase().includes(search.toLowerCase())) : ALL_CUSTOMERS;
 
@@ -1182,7 +1224,7 @@ function CustomerPage({ customer, search, drillCustomer }) {
           <Gauge value={customer.portfolio} size={110} label="Portfolio Score" />
         </div>
       </Card>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(6,1fr)", gap: 14 }}>
         <KpiCard label="Monthly Sales" value={fmtShort(customer.monthlySales)} />
         <KpiCard label="Annual Sales" value={fmtShort(customer.annualSales)} />
         <KpiCard label="Target" value={fmtShort(customer.target)} />
@@ -1196,7 +1238,7 @@ function CustomerPage({ customer, search, drillCustomer }) {
         <KpiCard label="Ranking" value={`#${customer.ranking}`} />
         <KpiCard label="Purchase Frequency" value={`${Math.max(1, Math.round(30 / (customer.daysSincePurchase + 3)))}/mo`} />
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.3fr 1fr", gap: 14 }}>
         <Card title="Monthly Sales Trend">
           <ResponsiveContainer width="100%" height={210}>
             <LineChart data={custTrend}>
@@ -1227,16 +1269,17 @@ function CustomerPage({ customer, search, drillCustomer }) {
    PRODUCT PORTFOLIO PAGE
 ------------------------------------------------------------------*/
 function ProductPage() {
+  const isMobile = useIsMobile();
   const { SKUS } = useContext(DataContext);
   const avgScore = SKUS.length ? Math.round(SKUS.reduce((s, x) => s + x.portfolioScore, 0) / SKUS.length) : 0;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 2fr", gap: 14 }}>
         <Card title="Overall Portfolio Score" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
           <Gauge value={avgScore} size={170} label="Company-wide SKU availability" />
         </Card>
         <Card title="Availability Status" subtitle="Traffic-light distribution across all SKUs">
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, height: "100%", alignContent: "center" }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3,1fr)", gap: 12, height: "100%", alignContent: "center" }}>
             {[
               { label: "Available (Green)", n: SKUS.filter((s) => s.portfolioScore >= 80).length, color: COLORS.green, soft: COLORS.greenSoft, icon: CheckCircle2 },
               { label: "Low Stock (Yellow)", n: SKUS.filter((s) => s.portfolioScore >= 60 && s.portfolioScore < 80).length, color: COLORS.amber, soft: COLORS.amberSoft, icon: AlertTriangle },
@@ -1287,6 +1330,7 @@ function TreemapCell({ x, y, width, height, name, fill, value }) {
   );
 }
 function BrandPage() {
+  const isMobile = useIsMobile();
   const { BRAND_DIST } = useContext(DataContext);
   const treemapData = BRAND_DIST.map((b, i) => ({ name: b.brand, size: b.sales, fill: BRAND_PALETTE[i % BRAND_PALETTE.length] }));
   return (
@@ -1307,7 +1351,7 @@ function BrandPage() {
           </tbody>
         </table>
       </Card>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14 }}>
         <Card title="Brand Distribution — Bar Chart">
           <ResponsiveContainer width="100%" height={230}>
             <BarChart data={BRAND_DIST}>
@@ -1335,7 +1379,7 @@ function BrandPage() {
           </ResponsiveContainer>
         </Card>
         <Card title="Distribution Heat Map" subtitle="Darker = stronger coverage">
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)", gap: 8 }}>
             {BRAND_DIST.map((b) => {
               const opacity = 0.25 + (b.distPct / 100) * 0.75;
               return (
@@ -1356,11 +1400,12 @@ function BrandPage() {
    SALES REP PAGE
 ------------------------------------------------------------------*/
 function RepsPage() {
+  const isMobile = useIsMobile();
   const { REP_PERF } = useContext(DataContext);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <Card title="Leaderboard" subtitle="Ranked by monthly sales">
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)", gap: 12 }}>
           {REP_PERF.slice(0, 4).map((r) => (
             <div key={r.rep} style={{ border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: "14px 16px", position: "relative" }}>
               <div style={{ position: "absolute", top: 10, right: 12, fontFamily: "Manrope", fontWeight: 800, fontSize: 18, color: r.rank === 1 ? COLORS.amber : COLORS.textMuted }}>#{r.rank}</div>
@@ -1396,6 +1441,7 @@ function RepsPage() {
    STOCK & AVAILABILITY PAGE
 ------------------------------------------------------------------*/
 function StockPage() {
+  const isMobile = useIsMobile();
   const { WAREHOUSE_STOCK, ABC_ANALYSIS, STOCK_TREND, SKUS, stockTrendEstimated } = useContext(DataContext);
   const movementData = SKUS.slice(0, 8).map((s) => ({ sku: s.sku.split(" ").slice(0, 2).join(" "), movement: Math.max(5, Math.min(100, Math.round(100 - s.daysSincePurchase * 2))) }));
   return (
@@ -1415,7 +1461,7 @@ function StockPage() {
           </tbody>
         </table>
       </Card>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14 }}>
         <Card title="ABC Analysis" subtitle="Revenue contribution by SKU tier">
           <ResponsiveContainer width="100%" height={220}>
             <PieChart>
@@ -1469,6 +1515,7 @@ function StockPage() {
    LOST OPPORTUNITY PAGE
 ------------------------------------------------------------------*/
 function LostPage() {
+  const isMobile = useIsMobile();
   const { LOST_OPPS } = useContext(DataContext);
   const totalLost = LOST_OPPS.reduce((s, o) => s + o.estLostMonthly, 0) || 1;
   const paretoData = LOST_OPPS.slice(0, 10).map((o, i, arr) => {
@@ -1477,7 +1524,7 @@ function LostPage() {
   });
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)", gap: 14 }}>
         <KpiCard label="Est. Monthly Lost Sales" value={fmtShort(totalLost)} tone="bad" icon={TrendingDown} />
         <KpiCard label="Potential Annual Revenue" value={fmtShort(totalLost * 12)} tone="warn" />
         <KpiCard label="High Priority SKUs" value={LOST_OPPS.filter((o) => o.priority === "High").length} tone="bad" />

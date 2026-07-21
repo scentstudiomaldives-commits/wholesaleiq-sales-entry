@@ -45,13 +45,13 @@ export default function LoginPage() {
         <label style={{ fontSize: 12, fontWeight: 700, color: C.text, display: "block", marginBottom: 6 }}>Email</label>
         <input
           type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
-          style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: `1px solid ${C.line}`, marginBottom: 16, fontSize: 14, fontFamily: "Inter" }}
+          style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: `1px solid ${C.line}`, marginBottom: 16, fontSize: 16, fontFamily: "Inter" }}
           placeholder="you@sto.mv"
         />
         <label style={{ fontSize: 12, fontWeight: 700, color: C.text, display: "block", marginBottom: 6 }}>Password</label>
         <input
           type="password" required value={password} onChange={(e) => setPassword(e.target.value)}
-          style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: `1px solid ${C.line}`, marginBottom: 20, fontSize: 14, fontFamily: "Inter" }}
+          style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: `1px solid ${C.line}`, marginBottom: 20, fontSize: 16, fontFamily: "Inter" }}
           placeholder="••••••••"
         />
         {error && <div style={{ color: C.red, fontSize: 12.5, fontWeight: 600, marginBottom: 14 }}>{error}</div>}
