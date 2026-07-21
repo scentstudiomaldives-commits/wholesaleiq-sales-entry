@@ -155,3 +155,41 @@ select
      order by entry_date desc limit 1) as next_visit_date
 from customers c
 where c.status = 'active';
+
+-- 9. SKU / PRODUCT PORTFOLIO (admin-maintained, persists across logins) ---
+create table if not exists skus (
+  id uuid primary key default gen_random_uuid(),
+  brand text not null,
+  category text not null,
+  sku text not null,
+  required_customers numeric default 0,
+  available_customers numeric default 0,
+  facing numeric default 1,
+  shelf_share_pct numeric default 0,
+  competitor_present boolean default false,
+  days_since_purchase numeric default 0,
+  monthly_sales numeric default 0,
+  gp_pct numeric default 18,
+  prior_month_sales numeric default 0,
+  avg_unit_value numeric default 25,
+  uploaded_at timestamptz default now()
+);
+
+-- 10. WAREHOUSE STOCK (admin-maintained, persists across logins) --------
+create table if not exists warehouse_stock (
+  id uuid primary key default gen_random_uuid(),
+  brand text not null,
+  stock_units numeric default 0,
+  days_of_cover numeric default 15,
+  out_of_stock numeric default 0,
+  low_stock numeric default 0,
+  near_expiry numeric default 0,
+  uploaded_at timestamptz default now()
+);
+
+alter table skus enable row level security;
+alter table warehouse_stock enable row level security;
+
+create policy "skus_admin_all" on skus for all using (is_admin()) with check (is_admin());
+create policy "warehouse_stock_admin_all" on warehouse_stock for all using (is_admin()) with check (is_admin());
+

@@ -39,7 +39,7 @@ const toNum = (v, def = 0) => { if (v === undefined || v === null || v === "") r
 const toBool = (v) => /^(y|yes|true|1)$/i.test(String(v || "").trim());
 
 function seededRandom(seed) { let s = seed; return () => { s = (s * 9301 + 49297) % 233280; return s / 233280; }; }
-const rnd = seededRandom(42);
+const rnd = seededRandom(Date.now() % 100000); // reseeded each page load so demo figures visibly differ from real data
 const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
 const range = (n) => Array.from({ length: n }, (_, i) => i);
 
@@ -586,7 +586,7 @@ function UploadPanel({ open, onClose, meta, errors, onFile, onReset }) {
    MAIN APP — receives live customer + trend data from the server
    component (app/admin/page.jsx), which queries Supabase.
 ------------------------------------------------------------------*/
-export default function App({ profile, liveCustomerRows, liveTrendRows }) {
+export default function App({ profile, liveCustomerRows, liveTrendRows, initialSkuRows, initialStockRows }) {
   const router = useRouter();
   const supabase = createClient();
   const [page, setPage] = useState("executive");
@@ -596,10 +596,14 @@ export default function App({ profile, liveCustomerRows, liveTrendRows }) {
   const [custSearch, setCustSearch] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
 
-  const [skuRows, setSkuRows] = useState(null);
-  const [stockRows, setStockRows] = useState(null);
-  const [meta, setMeta] = useState({ skus: null, stock: null });
+  const [skuRows, setSkuRows] = useState(initialSkuRows);
+  const [stockRows, setStockRows] = useState(initialStockRows);
+  const [meta, setMeta] = useState({
+    skus: initialSkuRows ? { rows: initialSkuRows.length, updated: new Date() } : null,
+    stock: initialStockRows ? { rows: initialStockRows.length, updated: new Date() } : null,
+  });
   const [errors, setErrors] = useState({ skus: null, stock: null });
+  const [saving, setSaving] = useState({ skus: false, stock: false });
 
   const demoSkuRows = useMemo(() => generateDemoSkuRows(liveCustomerRows.filter((r) => r.status !== "lost").length || 40), [liveCustomerRows]);
   const demoStockRows = useMemo(() => generateDemoStockRows(), []);
@@ -617,15 +621,46 @@ export default function App({ profile, liveCustomerRows, liveTrendRows }) {
       const rows = await parseSpreadsheet(file);
       const missing = REQUIRED_COLS[kind].filter((c) => !(c in (rows[0] || {})));
       if (missing.length) { setErrors((p) => ({ ...p, [kind]: `Missing column(s): ${missing.join(", ")}` })); return; }
+
+      setSaving((p) => ({ ...p, [kind]: true }));
+      const table = kind === "skus" ? "skus" : "warehouse_stock";
+      // Full-snapshot replace: clear the table, insert the new upload, so the
+      // dashboard always reflects exactly what's in the latest file.
+      const { error: delErr } = await supabase.from(table).delete().not("id", "is", null);
+      if (delErr) { setErrors((p) => ({ ...p, [kind]: "Could not save to database: " + delErr.message })); setSaving((p) => ({ ...p, [kind]: false })); return; }
+
+      const cleanRows = rows.map((r) => {
+        if (kind === "skus") {
+          return {
+            brand: r.brand, category: r.category, sku: r.sku,
+            required_customers: toNum(r.required_customers), available_customers: toNum(r.available_customers),
+            facing: toNum(r.facing, 1), shelf_share_pct: toNum(r.shelf_share_pct, 0),
+            competitor_present: toBool(r.competitor_present), days_since_purchase: toNum(r.days_since_purchase, 0),
+            monthly_sales: toNum(r.monthly_sales, 0), gp_pct: toNum(r.gp_pct, 18),
+            prior_month_sales: toNum(r.prior_month_sales, 0), avg_unit_value: toNum(r.avg_unit_value, 25),
+          };
+        }
+        return {
+          brand: r.brand, stock_units: toNum(r.stock_units), days_of_cover: toNum(r.days_of_cover, 15),
+          out_of_stock: toNum(r.out_of_stock, 0), low_stock: toNum(r.low_stock, 0), near_expiry: toNum(r.near_expiry, 0),
+        };
+      });
+      const { error: insErr } = await supabase.from(table).insert(cleanRows);
+      setSaving((p) => ({ ...p, [kind]: false }));
+      if (insErr) { setErrors((p) => ({ ...p, [kind]: "Could not save to database: " + insErr.message })); return; }
+
       if (kind === "skus") setSkuRows(rows);
       if (kind === "stock") setStockRows(rows);
       setMeta((p) => ({ ...p, [kind]: { rows: rows.length, updated: new Date() } }));
       setErrors((p) => ({ ...p, [kind]: null }));
     } catch (e) {
       setErrors((p) => ({ ...p, [kind]: "Could not read file — check it's a valid CSV/Excel export." }));
+      setSaving((p) => ({ ...p, [kind]: false }));
     }
   };
-  const handleReset = () => {
+  const handleReset = async () => {
+    await supabase.from("skus").delete().not("id", "is", null);
+    await supabase.from("warehouse_stock").delete().not("id", "is", null);
     setSkuRows(null); setStockRows(null);
     setMeta({ skus: null, stock: null });
     setErrors({ skus: null, stock: null });

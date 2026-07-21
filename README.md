@@ -63,7 +63,7 @@ Either way, make sure each customer has a `rep_id` set (the rep's User UID) so i
 - **Customer sales, targets, portfolio %, visits, GP** on the dashboard are all live from `sales_entries` — no upload needed, updates the moment a rep saves an entry.
 - **Monthly trend chart** is now real history (grouped by actual entry dates), not estimated.
 - **Outstanding balance** is a simplified placeholder (`credit limit − this month's sales`) — if you want real accounts-receivable tracking, that needs a proper payments/invoices table, which I can add next.
-- **SKU/Brand/Stock/Lost Opportunity pages** still use the CSV upload panel from before — those aren't part of daily rep entry, so nothing changes there.
+- **SKU/Brand/Stock/Lost Opportunity pages** read from the `skus` and `warehouse_stock` tables — uploading a CSV replaces their contents, so it persists across logins/devices for any admin. Until you upload, these show demo figures that visibly change on every page load, so they're never mistaken for real data.
 
 ## Reasonable next steps, if useful
 - A "forgot password" flow for reps (currently you'd reset manually via Supabase Studio)
