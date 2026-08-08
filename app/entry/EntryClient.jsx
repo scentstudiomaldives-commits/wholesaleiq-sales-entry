@@ -28,9 +28,7 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
   const [showNewCustomer, setShowNewCustomer] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
-  const [loadingChecklist, setLoadingChecklist] = useState(false);
   const [hadSale, setHadSale] = useState(null); // null = not answered yet, true/false once picked
-  const [stockChecks, setStockChecks] = useState({}); // { [sku_id]: boolean }
 
   // Refs update instantly; state-driven `disabled` on a button only takes
   // effect on the next render, which leaves a real gap for a fast
@@ -79,20 +77,11 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
 
   const todayTotal = todaysEntries.reduce((s, e) => s + Number(e.sale_amount || 0), 0);
 
-  const openEntry = async (customer) => {
+  const openEntry = (customer) => {
     setSelected(customer);
     setHadSale(null);
     setForm({ sale_amount: "", outstanding_collected: "", visit_notes: "", next_visit_date: "" });
-    setStockChecks({});
-    setLoadingChecklist(true);
-    const { data } = await supabase.from("customer_sku_stock").select("sku_id, in_stock").eq("customer_id", customer.id);
-    const checks = {};
-    (data || []).forEach((r) => { checks[r.sku_id] = r.in_stock; });
-    setStockChecks(checks);
-    setLoadingChecklist(false);
   };
-
-  const toggleSku = (skuId) => setStockChecks((prev) => ({ ...prev, [skuId]: !prev[skuId] }));
 
   const submitEntry = async (e) => {
     e.preventDefault();
@@ -100,30 +89,16 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
     submittingVisitRef.current = true;
     setSaving(true);
     try {
-      const totalSkus = (skus || []).length;
-      const checkedCount = Object.values(stockChecks).filter(Boolean).length;
-      const portfolioPct = totalSkus ? Math.round((checkedCount / totalSkus) * 100) : null;
-
       const { error } = await supabase.from("sales_entries").insert({
         customer_id: selected.id,
         rep_id: profile.id,
         sale_amount: hadSale ? Number(form.sale_amount) || 0 : 0,
         gp: hadSale ? Math.round((Number(form.sale_amount) || 0) * DEFAULT_GP_MARGIN) : 0,
-        portfolio_pct: portfolioPct,
         outstanding_collected: Number(form.outstanding_collected) || 0,
         visit_notes: form.visit_notes || null,
         next_visit_date: form.next_visit_date || null,
       });
       if (error) { setToast("Could not save — check your connection and try again."); return; }
-
-      if ((skus || []).length) {
-        const stockRows = skus.map((s) => ({
-          customer_id: selected.id, sku_id: s.id, in_stock: !!stockChecks[s.id],
-          updated_by: profile.id, updated_at: new Date().toISOString(),
-        }));
-        const { error: stockErr } = await supabase.from("customer_sku_stock").upsert(stockRows, { onConflict: "customer_id,sku_id" });
-        if (stockErr) { setToast("Visit saved, but the stock checklist didn't save — try re-opening this customer."); setSelected(null); router.refresh(); setTimeout(() => setToast(""), 3500); return; }
-      }
 
       setToast(`Saved: ${selected.name}`);
       setSelected(null);
@@ -322,6 +297,21 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
         await supabase.from("customer_sku_stock").upsert(stockRows, { onConflict: "customer_id,sku_id" });
       }
 
+      // Portfolio % now comes from what scanning has confirmed over time,
+      // not a manually-ticked checklist — pull the customer's full
+      // accumulated stock record (this scan plus any earlier ones), not
+      // just today's invoice, so a customer isn't shown as regressing in
+      // portfolio just because today's invoice was a small top-up order.
+      if ((skus || []).length) {
+        const { count } = await supabase
+          .from("customer_sku_stock")
+          .select("id", { count: "exact", head: true })
+          .eq("customer_id", invoiceReview.customerId)
+          .eq("in_stock", true);
+        const portfolioPct = Math.round(((count || 0) / skus.length) * 100);
+        await supabase.from("sales_entries").update({ portfolio_pct: portfolioPct }).eq("id", entryRows.id);
+      }
+
       setToast("Invoice saved");
       closeInvoiceUpload();
       router.refresh();
@@ -429,36 +419,8 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
             <Field label="Outstanding collected (MVR)" type="number" value={form.outstanding_collected} onChange={(v) => setForm({ ...form, outstanding_collected: v })} />
             <Field label="Next follow-up date" type="date" value={form.next_visit_date} onChange={(v) => setForm({ ...form, next_visit_date: v })} />
             <label style={{ fontSize: 12, fontWeight: 700, color: C.text, display: "block", marginBottom: 6, marginTop: 4 }}>Visit notes</label>
-            <textarea rows={2} value={form.visit_notes} onChange={(e) => setForm({ ...form, visit_notes: e.target.value })} style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: `1px solid ${C.line}`, fontSize: 16, fontFamily: "Inter", marginBottom: 18, resize: "none" }} />
-
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6, marginBottom: 2 }}>
-              <span style={{ fontFamily: "Manrope", fontWeight: 800, fontSize: 13.5, color: C.text }}>Items customer currently stocks</span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: C.blue, background: C.blueSoft, padding: "3px 9px", borderRadius: 999 }}>
-                {Object.values(stockChecks).filter(Boolean).length} / {(skus || []).length}
-                {(skus || []).length ? ` (${Math.round((Object.values(stockChecks).filter(Boolean).length / skus.length) * 100)}%)` : ""}
-              </span>
-            </div>
-            <div style={{ fontSize: 11, color: C.muted, marginBottom: 10 }}>Tick everything you can see on their shelf right now — this replaces typing in a portfolio %.</div>
-
-            {loadingChecklist && <div style={{ fontSize: 12, color: C.muted, padding: "10px 0" }}>Loading checklist…</div>}
-            {!loadingChecklist && Object.entries(skusByBrand).map(([brand, brandSkus]) => {
-              const checkedInBrand = brandSkus.filter((s) => stockChecks[s.id]).length;
-              return (
-                <div key={brand} style={{ border: `1px solid ${C.line}`, borderRadius: 12, overflow: "hidden", marginBottom: 12 }}>
-                  <div style={{ background: "#F4F7FB", padding: "9px 12px", fontSize: 12, fontWeight: 700, color: C.text, display: "flex", justifyContent: "space-between" }}>
-                    <span>{brand}</span>
-                    <span style={{ color: C.muted, fontWeight: 600 }}>{checkedInBrand}/{brandSkus.length}</span>
-                  </div>
-                  {brandSkus.map((s) => (
-                    <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderTop: `1px solid ${C.line}`, fontSize: 12.5, color: C.text, fontWeight: 500 }}>
-                      <input type="checkbox" checked={!!stockChecks[s.id]} onChange={() => toggleSku(s.id)} style={{ width: 18, height: 18, margin: 0, accentColor: C.blue, flexShrink: 0 }} />
-                      {s.sku}
-                    </label>
-                  ))}
-                </div>
-              );
-            })}
-            {!loadingChecklist && !(skus || []).length && <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>No SKU catalog uploaded yet — ask your admin to upload the product list.</div>}
+            <textarea rows={2} value={form.visit_notes} onChange={(e) => setForm({ ...form, visit_notes: e.target.value })} style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: `1px solid ${C.line}`, fontSize: 16, fontFamily: "Inter", marginBottom: 6, resize: "none" }} />
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 18 }}>Need to record what's on their shelf? Cancel this and use "Scan Invoice" instead — it updates their stock checklist automatically.</div>
 
             <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
               <button type="button" onClick={() => setSelected(null)} style={{ flex: 1, padding: "12px", borderRadius: 10, border: `1px solid ${C.line}`, background: "#fff", color: C.text, fontWeight: 700, fontSize: 14 }}>Cancel</button>
