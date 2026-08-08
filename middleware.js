@@ -31,20 +31,9 @@ export async function middleware(request) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  if (user && (path.startsWith("/entry") || path.startsWith("/admin"))) {
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
-
-    if (path.startsWith("/admin") && profile?.role !== "admin") {
-      return NextResponse.redirect(new URL("/entry", request.url));
-    }
-    if (path.startsWith("/entry") && profile?.role === "admin") {
-      return NextResponse.redirect(new URL("/admin", request.url));
-    }
-  }
+  // Role-based routing (rep vs admin) is handled by each page itself
+  // (see app/entry/page.jsx and app/admin/page.jsx) — doing it here too
+  // meant an extra database round-trip on every single navigation.
 
   return response;
 }

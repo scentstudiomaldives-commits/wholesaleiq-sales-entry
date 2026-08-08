@@ -1,4 +1,4 @@
-# WholesaleIQ — Sales Entry App
+# STO General Trading — Wholesale Dashboard
 
 Two logins, one database:
 - **Reps** → `/entry` — a mobile-friendly form to log today's visits and sales, per customer. No dashboard access.
@@ -37,10 +37,18 @@ Either way, make sure each customer has a `rep_id` set (the rep's User UID) so i
 
 ## 4. Run it
 
-**Locally testing (optional):** copy `.env.local.example` to `.env.local`, fill in your Project URL and anon key, then `npm install && npm run dev`.
+**Editing/testing in the browser (GitHub Codespaces):** this repo includes a `.devcontainer/` config, so you can get a full VS Code + terminal in your browser with no local install:
+1. On the repo's GitHub page, click **Code → Codespaces → Create codespace on main**. First launch takes a minute or two while it installs dependencies automatically.
+2. Before running the app, add your Supabase keys as Codespaces secrets so they're available every time you open this repo, without ever being committed: GitHub → your profile → **Settings → Codespaces → Repository secrets → New secret**, add `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` (same values from step 1.3), and grant access to this repo. Restart the codespace once for them to load.
+3. In the Codespace's terminal: `npm run dev`. VS Code will pop up a "port 3000" notification — click it to preview the app in a browser tab, right inside Codespaces.
+4. Edit files directly in the VS Code editor; the dev server hot-reloads as you save.
+
+This is purely for editing/testing — deploying to reps still goes through Vercel as below, not the Codespace itself.
+
+**Locally testing (optional, if you ever have a machine without restrictions):** copy `.env.local.example` to `.env.local`, fill in your Project URL and anon key, then `npm install && npm run dev`.
 
 **Deploying (your usual flow):**
-1. Push this folder to a new GitHub repo (GitHub's web uploader works fine, or the web-based editor you already use).
+1. Push this folder to a new GitHub repo (GitHub's web uploader works fine, or the web-based editor you already use — or commit directly from the Codespace terminal with `git add -A && git commit -m "..." && git push`).
 2. In Vercel, **New Project → Import** that repo.
 3. In Vercel's project settings → Environment Variables, add:
    - `NEXT_PUBLIC_SUPABASE_URL`

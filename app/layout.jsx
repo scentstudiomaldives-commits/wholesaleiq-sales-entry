@@ -1,5 +1,5 @@
 export const metadata = {
-  title: "WholesaleIQ — Sales Entry",
+  title: "STO General Trading — Wholesale Dashboard",
   description: "Daily sales and customer data entry",
 };
 

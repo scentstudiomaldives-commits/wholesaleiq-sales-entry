@@ -759,11 +759,13 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
           }}
         >
           <div style={{ padding: "22px 20px 18px", borderBottom: "1px solid rgba(255,255,255,0.08)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-              <div style={{ width: 32, height: 32, borderRadius: 9, background: COLORS.blue, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Manrope, sans-serif", fontWeight: 800, color: "#fff", fontSize: 14 }}>W</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ background: "#fff", borderRadius: 8, padding: "5px 8px", display: "flex", alignItems: "center", flexShrink: 0 }}>
+                <img src="/logo.png" alt="STO" style={{ height: 20, width: "auto", display: "block" }} />
+              </div>
               <div>
-                <div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 800, color: "#fff", fontSize: 14.5, lineHeight: 1.2 }}>WholesaleIQ</div>
-                <div style={{ fontFamily: "Inter, sans-serif", fontSize: 10.5, color: "#8FA8C4", fontWeight: 600, letterSpacing: 0.3 }}>ATOLL DISTRIBUTION</div>
+                <div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 800, color: "#fff", fontSize: 13.5, lineHeight: 1.2 }}>General Trading</div>
+                <div style={{ fontFamily: "Inter, sans-serif", fontSize: 10, color: "#8FA8C4", fontWeight: 600, letterSpacing: 0.3 }}>WHOLESALE DASHBOARD</div>
               </div>
             </div>
             {isMobile && <X size={18} color="#B9C9DC" style={{ cursor: "pointer" }} onClick={() => setSidebarOpen(false)} />}

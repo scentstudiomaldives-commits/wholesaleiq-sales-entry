@@ -9,6 +9,11 @@ const C = {
   line: "#E4EAF2", text: "#0B2036", muted: "#8B99AC", surface: "#FFFFFF",
 };
 
+// Reps don't enter gross profit directly — it's estimated from the sale
+// amount using this assumed blended margin. Adjust to match your actual
+// average margin, or replace with a per-customer/per-brand rate later.
+const DEFAULT_GP_MARGIN = 0.18;
+
 function daysUntil(dateStr) {
   if (!dateStr) return null;
   const d = new Date(dateStr); const today = new Date();
@@ -40,7 +45,7 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
     return acc;
   }, {});
 
-  const [form, setForm] = useState({ sale_amount: "", gp: "", outstanding_collected: "", visit_notes: "", next_visit_date: "" });
+  const [form, setForm] = useState({ sale_amount: "", outstanding_collected: "", visit_notes: "", next_visit_date: "" });
   const [newCust, setNewCust] = useState({ name: "", region: "", area: "", customer_type: "Mini Mart", monthly_target: "", credit_limit: "" });
 
   const loggedIds = new Set(todaysEntries.map((e) => e.customer_id));
@@ -58,7 +63,7 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
   const openEntry = async (customer) => {
     setSelected(customer);
     setHadSale(null);
-    setForm({ sale_amount: "", gp: "", outstanding_collected: "", visit_notes: "", next_visit_date: "" });
+    setForm({ sale_amount: "", outstanding_collected: "", visit_notes: "", next_visit_date: "" });
     setStockChecks({});
     setLoadingChecklist(true);
     const { data } = await supabase.from("customer_sku_stock").select("sku_id, in_stock").eq("customer_id", customer.id);
@@ -81,7 +86,7 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
       customer_id: selected.id,
       rep_id: profile.id,
       sale_amount: hadSale ? Number(form.sale_amount) || 0 : 0,
-      gp: hadSale ? Number(form.gp) || 0 : 0,
+      gp: hadSale ? Math.round((Number(form.sale_amount) || 0) * DEFAULT_GP_MARGIN) : 0,
       portfolio_pct: portfolioPct,
       outstanding_collected: Number(form.outstanding_collected) || 0,
       visit_notes: form.visit_notes || null,
@@ -129,9 +134,14 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
     <div style={{ minHeight: "100vh", background: "#F4F7FB", paddingBottom: 40 }}>
       {/* Header */}
       <div style={{ background: C.navy, padding: "16px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 10 }}>
-        <div>
-          <div style={{ color: "#fff", fontFamily: "Manrope", fontWeight: 800, fontSize: 15 }}>{profile.full_name}</div>
-          <div style={{ color: "#8FA8C4", fontSize: 11 }}>{new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" })}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ background: "#fff", borderRadius: 7, padding: "4px 7px", display: "flex", alignItems: "center", flexShrink: 0 }}>
+            <img src="/logo.png" alt="STO" style={{ height: 16, width: "auto", display: "block" }} />
+          </div>
+          <div>
+            <div style={{ color: "#fff", fontFamily: "Manrope", fontWeight: 800, fontSize: 15 }}>{profile.full_name}</div>
+            <div style={{ color: "#8FA8C4", fontSize: 11 }}>{new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" })}</div>
+          </div>
         </div>
         <button onClick={signOut} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: "#fff", fontSize: 12, fontWeight: 600, padding: "8px 12px", borderRadius: 8, cursor: "pointer" }}>Sign out</button>
       </div>
@@ -208,7 +218,6 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
             {hadSale === true && (
               <div style={{ borderLeft: `3px solid ${C.greenSoft}`, paddingLeft: 12 }}>
                 <Field label="Sale amount (MVR)" type="number" required value={form.sale_amount} onChange={(v) => setForm({ ...form, sale_amount: v })} />
-                <Field label="Gross profit (MVR)" type="number" value={form.gp} onChange={(v) => setForm({ ...form, gp: v })} />
               </div>
             )}
 

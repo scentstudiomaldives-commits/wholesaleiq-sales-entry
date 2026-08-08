@@ -18,27 +18,23 @@ export default function LoginPage() {
   const handleLogin = async (e) => {
     e.preventDefault();
     setError(""); setLoading(true);
-    const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password });
+    const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
     if (authError) { setError("Incorrect email or password."); setLoading(false); return; }
 
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("role")
-      .eq("id", data.user.id)
-      .single();
-
-    router.push(profile?.role === "admin" ? "/admin" : "/entry");
+    // Always land on /entry — it checks the role itself and forwards
+    // admins to /admin. Saves an extra round-trip here on every login.
+    router.push("/entry");
     router.refresh();
   };
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <form onSubmit={handleLogin} style={{ width: 360, maxWidth: "100%", background: "#fff", border: `1px solid ${C.line}`, borderRadius: 16, padding: "32px 28px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 24 }}>
-          <div style={{ width: 32, height: 32, borderRadius: 9, background: C.blue, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Manrope", fontWeight: 800, color: "#fff" }}>W</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 24 }}>
+          <img src="/logo.png" alt="STO" style={{ height: 30, width: "auto", display: "block" }} />
           <div>
-            <div style={{ fontFamily: "Manrope", fontWeight: 800, fontSize: 15, color: C.text }}>WholesaleIQ</div>
-            <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 600 }}>SALES ENTRY LOGIN</div>
+            <div style={{ fontFamily: "Manrope", fontWeight: 800, fontSize: 14.5, color: C.text, lineHeight: 1.2 }}>General Trading</div>
+            <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 600 }}>WHOLESALE DASHBOARD LOGIN</div>
           </div>
         </div>
 
