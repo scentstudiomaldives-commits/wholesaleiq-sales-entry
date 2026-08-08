@@ -4,6 +4,10 @@ import { matchInvoiceToDatabase } from "../../../lib/invoiceMatching";
 
 // Needs Buffer/fetch-with-large-bodies — not compatible with the edge runtime.
 export const runtime = "nodejs";
+// Vision calls can run long, especially on a cold start. This asks Vercel
+// for more time than the default — actual cap depends on your plan (10s
+// on Hobby regardless of this setting, up to 60s+ on Pro).
+export const maxDuration = 60;
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8MB
 const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/jpg", "image/webp"];
@@ -120,18 +124,23 @@ export async function POST(request) {
 }
 
 async function extractInvoiceWithOpenAI(dataUrl) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 45000);
+
   let resp;
   try {
     resp = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
+      signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o",
+        model: "gpt-4o-mini",
         response_format: { type: "json_object" },
         temperature: 0,
+        max_tokens: 1500,
         messages: [
           {
             role: "user",
@@ -143,8 +152,13 @@ async function extractInvoiceWithOpenAI(dataUrl) {
         ],
       }),
     });
-  } catch {
+  } catch (e) {
+    if (e.name === "AbortError") {
+      return { error: "The invoice-reading service took too long to respond. Try again, or enter this invoice manually." };
+    }
     return { error: "Could not reach the invoice-reading service. Check your connection and try again." };
+  } finally {
+    clearTimeout(timeout);
   }
 
   if (!resp.ok) {

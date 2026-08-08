@@ -149,11 +149,40 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
     setShowInvoiceUpload(false); setInvoiceFile(null); setInvoicePreviewUrl(null); setInvoiceError(""); setInvoiceReview(null);
   };
 
-  const handleInvoiceFileChosen = (file) => {
+  // Phone camera photos are often 3000px+ wide — way more detail than a
+  // vision model needs to read text, and it slows down both the upload
+  // and OpenAI's own processing. Resizing client-side before we ever send
+  // it noticeably cuts round-trip time, which matters a lot on Vercel's
+  // Hobby plan (hard 10s function limit).
+  const compressImage = (file) =>
+    new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX_DIM = 1600;
+        let { width, height } = img;
+        if (width > MAX_DIM || height > MAX_DIM) {
+          const scale = MAX_DIM / Math.max(width, height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => resolve(blob ? new File([blob], "invoice.jpg", { type: "image/jpeg" }) : file),
+          "image/jpeg", 0.82
+        );
+      };
+      img.onerror = () => resolve(file); // fall back to the original if anything goes wrong
+      img.src = URL.createObjectURL(file);
+    });
+
+  const handleInvoiceFileChosen = async (file) => {
     if (!file) return;
     setInvoiceError("");
-    setInvoiceFile(file);
-    setInvoicePreviewUrl(URL.createObjectURL(file));
+    const compressed = await compressImage(file);
+    setInvoiceFile(compressed);
+    setInvoicePreviewUrl(URL.createObjectURL(compressed));
   };
 
   const parseInvoice = async () => {
@@ -166,7 +195,12 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
       const resp = await fetch("/api/parse-invoice", { method: "POST", body: formData });
       const body = await resp.json().catch(() => null);
       if (!resp.ok || !body || body.error) {
-        setInvoiceError(body?.error || "Could not read that invoice. Try a clearer photo, or enter it manually.");
+        setInvoiceError(
+          body?.error ||
+          (resp.status === 504 || resp.status === 502
+            ? "The invoice-reading service took too long or crashed before responding — this usually means a server timeout, not a bad photo. Try again in a moment, or enter it manually."
+            : "Could not read that invoice. Try a clearer photo, or enter it manually.")
+        );
         setInvoiceParsing(false);
         return;
       }
