@@ -174,6 +174,8 @@ function buildModel(customerRows, skuRows, stockRows, trendRows) {
       daysSincePurchase: toNum(r.days_since_purchase, 0),
       growth: toNum(r.growth_pct, 0),
       isNew: toBool(r.is_new),
+      isBuying: toBool(r.is_buying),
+      lastPurchaseDate: r.last_purchase_date || null,
     };
   };
 
@@ -191,6 +193,7 @@ function buildModel(customerRows, skuRows, stockRows, trendRows) {
       const sales = customers.reduce((s, c) => s + c.monthlySales, 0);
       const target = customers.reduce((s, c) => s + c.target, 0);
       const activeCust = customers.filter((c) => c.daysSincePurchase < 30).length;
+      const buyingCust = customers.filter((c) => c.isBuying).length;
       const repCounts = {};
       customers.forEach((c) => (repCounts[c.rep] = (repCounts[c.rep] || 0) + 1));
       const topRep = Object.entries(repCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "-";
@@ -199,6 +202,8 @@ function buildModel(customerRows, skuRows, stockRows, trendRows) {
         sales, target, achievement: target ? Math.round((sales / target) * 100) : 0,
         portfolio: customers.length ? Math.round(customers.reduce((s, c) => s + c.portfolio, 0) / customers.length) : 0,
         coverage: customers.length ? Math.round((activeCust / customers.length) * 100) : 0,
+        buyingCustomers: buyingCust, nonBuyingCustomers: customers.length - buyingCust,
+        penetrationPct: customers.length ? Math.round((buyingCust / customers.length) * 100) : 0,
         rep: topRep, lastVisit: customers.length ? Math.min(...customers.map((c) => c.lastVisit)) : 0,
       };
     });
@@ -206,6 +211,7 @@ function buildModel(customerRows, skuRows, stockRows, trendRows) {
     const target = areas.reduce((s, a) => s + a.target, 0);
     const custCount = areas.reduce((s, a) => s + a.customers.length, 0);
     const activeCustCount = areas.reduce((s, a) => s + a.customers.filter((c) => c.daysSincePurchase < 30).length, 0);
+    const buyingCustCount = areas.reduce((s, a) => s + a.buyingCustomers, 0);
     const gpSum = areas.reduce((s, a) => s + a.customers.reduce((s2, c) => s2 + c.gp, 0), 0);
     const newCust = areas.reduce((s, a) => s + a.customers.filter((c) => c.isNew).length, 0);
     const lostCust = lostRows.filter((r) => r.region === regionName).length;
@@ -213,6 +219,8 @@ function buildModel(customerRows, skuRows, stockRows, trendRows) {
       id: regionName, name: regionName, areas, sales, target,
       achievement: target ? Math.round((sales / target) * 100) : 0,
       customers: custCount, activeCustomers: activeCustCount,
+      buyingCustomers: buyingCustCount, nonBuyingCustomers: custCount - buyingCustCount,
+      penetrationPct: custCount ? Math.round((buyingCustCount / custCount) * 100) : 0,
       portfolio: areas.length ? Math.round(areas.reduce((s, a) => s + a.portfolio, 0) / areas.length) : 0,
       gpPct: sales ? Math.round((gpSum / sales) * 1000) / 10 : 0,
       newCustomers: newCust, lostCustomers: lostCust,
@@ -1094,11 +1102,71 @@ function RegionScorecards({ region }) {
       <KpiCard label="Target" value={fmtShort(region.target)} />
       <KpiCard label="Achievement" value={pct(region.achievement)} tone={region.achievement >= 95 ? "good" : "warn"} />
       <KpiCard label="Customers" value={`${region.customers} (${region.activeCustomers} active)`} />
+      <KpiCard label="Buying Penetration" value={pct(region.penetrationPct)} sub={`${region.buyingCustomers}/${region.customers} bought in 30d`} tone={region.penetrationPct >= 70 ? "good" : region.penetrationPct >= 40 ? "warn" : "bad"} />
       <KpiCard label="Portfolio %" value={pct(region.portfolio)} tone={region.portfolio >= 80 ? "good" : "warn"} />
       <KpiCard label="GP %" value={pct(region.gpPct)} tone="good" />
       <KpiCard label="New Customers" value={region.newCustomers} tone="good" />
       <KpiCard label="Lost Customers" value={region.lostCustomers} tone="bad" />
     </div>
+  );
+}
+
+/* ---------------------------------------------------------------
+   REGIONAL BUYING PERFORMANCE / PENETRATION
+   "Buying" = at least one sale (sale_amount > 0) in the last 30 days.
+   Stricter than "coverage" elsewhere, which counts any logged visit.
+------------------------------------------------------------------*/
+function PenetrationCard({ region, drillCustomer, isMobile }) {
+  const [expanded, setExpanded] = useState({});
+  const toggle = (id) => setExpanded((p) => ({ ...p, [id]: !p[id] }));
+
+  return (
+    <Card title="Regional Buying Performance" subtitle="Penetration rate = customers with a sale in the last 30 days, per island">
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {region.areas.map((a) => {
+          const nonBuying = a.customers.filter((c) => !c.isBuying);
+          const tone = a.penetrationPct >= 70 ? "good" : a.penetrationPct >= 40 ? "warn" : "bad";
+          return (
+            <div key={a.id} style={{ border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: "14px 16px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: isMobile ? "wrap" : "nowrap" }}>
+                <div style={{ minWidth: 110, fontFamily: "Manrope", fontWeight: 800, fontSize: 13.5, color: COLORS.textPrimary }}>{a.name}</div>
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <ProgressBar value={a.penetrationPct} tone={tone} height={8} />
+                </div>
+                <div style={{ minWidth: 190, textAlign: "right", fontSize: 12.5, fontWeight: 700, color: tone === "good" ? COLORS.green : tone === "warn" ? COLORS.amber : COLORS.red, whiteSpace: "nowrap" }}>
+                  {a.penetrationPct}% Active ({a.buyingCustomers}/{a.customers.length} Customers)
+                </div>
+                {nonBuying.length > 0 && (
+                  <button
+                    onClick={() => toggle(a.id)}
+                    style={{ fontSize: 11.5, fontWeight: 700, color: COLORS.blue, background: COLORS.blueSoft, border: "none", borderRadius: 8, padding: "6px 10px", cursor: "pointer", whiteSpace: "nowrap" }}
+                  >
+                    {expanded[a.id] ? "Hide" : "Show"} non-buying ({nonBuying.length})
+                  </button>
+                )}
+              </div>
+              {expanded[a.id] && (
+                <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.line}`, display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 2 }}>Target these on the next visit to {a.name}:</div>
+                  {nonBuying.map((c) => (
+                    <div key={c.id} className="rowclick" onClick={() => drillCustomer(c.id)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 9px", borderRadius: 8 }}>
+                      <div>
+                        <span style={{ fontSize: 12.5, fontWeight: 600, color: COLORS.textPrimary }}>{c.name}</span>
+                        <span style={{ fontSize: 11, color: COLORS.textMuted, marginLeft: 8 }}>{c.code}</span>
+                      </div>
+                      <span style={{ fontSize: 11, color: COLORS.textMuted }}>
+                        {c.lastPurchaseDate ? `Last bought ${c.lastPurchaseDate}` : "Never purchased"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {!region.areas.length && <div style={{ fontSize: 12, color: COLORS.textMuted }}>No islands with customers in this region yet.</div>}
+      </div>
+    </Card>
   );
 }
 
@@ -1139,6 +1207,7 @@ function AreaPage({ region, area, drillArea, drillCustomer, setSelectedRegion })
           </tbody>
         </table>
       </Card>
+      <PenetrationCard region={region} drillCustomer={drillCustomer} isMobile={isMobile} />
       <Card title="Area Performance Heatmap" subtitle="Green = strong achievement, red = at risk">
         <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : `repeat(${Math.max(region.areas.length, 1)}, 1fr)`, gap: 10 }}>
           {region.areas.map((a) => {
