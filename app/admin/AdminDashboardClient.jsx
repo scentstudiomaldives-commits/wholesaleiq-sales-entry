@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useEffect, useMemo, useContext, createContext, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { createClient } from "../../lib/supabaseClient";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
@@ -607,15 +607,34 @@ function UploadPanel({ open, onClose, meta, errors, onFile, onReset }) {
 ------------------------------------------------------------------*/
 export default function App({ profile, liveCustomerRows, liveTrendRows, initialSkuRows, initialStockRows }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const supabase = createClient();
   const isMobile = useIsMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [page, setPage] = useState("executive");
-  const [selectedRegion, setSelectedRegion] = useState(null);
-  const [selectedArea, setSelectedArea] = useState(null);
-  const [selectedCustomer, setSelectedCustomer] = useState(null);
+  // Drill-down position is seeded from the URL on first load, so a refresh
+  // or a shared link lands you back where you were — and every value has
+  // one clear owner (these four state values) rather than being silently
+  // duplicated between state and URL.
+  const [page, setPage] = useState(() => searchParams.get("page") || "executive");
+  const [selectedRegion, setSelectedRegion] = useState(() => searchParams.get("region") || null);
+  const [selectedArea, setSelectedArea] = useState(() => searchParams.get("area") || null);
+  const [selectedCustomer, setSelectedCustomer] = useState(() => searchParams.get("customer") || null);
   const [custSearch, setCustSearch] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
+
+  // Keep the URL in sync whenever the drill-down position changes, so
+  // Back/Forward and refresh behave predictably instead of losing position.
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (page !== "executive") params.set("page", page);
+    if (selectedRegion) params.set("region", selectedRegion);
+    if (selectedArea) params.set("area", selectedArea);
+    if (selectedCustomer) params.set("customer", selectedCustomer);
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, selectedRegion, selectedArea, selectedCustomer]);
 
   const [skuRows, setSkuRows] = useState(initialSkuRows);
   const [stockRows, setStockRows] = useState(initialStockRows);
@@ -697,6 +716,13 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
   const drillArea = (rid, aid) => { setSelectedRegion(rid); setSelectedArea(aid); setPage("area"); };
   const drillCustomer = (id) => { setSelectedCustomer(id); setPage("customer"); };
 
+  // Explicit "clear the drill-down" actions — used by Back/breadcrumb
+  // controls so there's always a reliable way out of a selected
+  // region/area/customer, instead of it silently persisting forever.
+  const clearAreaDrilldown = () => { setSelectedRegion(null); setSelectedArea(null); };
+  const clearIslandOnly = () => setSelectedArea(null);
+  const clearCustomerDrilldown = () => setSelectedCustomer(null);
+
   const alerts = useMemo(() => {
     const list = [];
     model.ALL_CUSTOMERS.forEach((c) => {
@@ -746,7 +772,7 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
             {NAV.map((n) => {
               const active = page === n.id; const Icon = n.icon;
               return (
-                <div key={n.id} className="navitem" onClick={() => { setPage(n.id); setSidebarOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, marginBottom: 3, cursor: "pointer", background: active ? "rgba(31,111,235,0.22)" : "transparent", borderLeft: active ? `3px solid ${COLORS.blue}` : "3px solid transparent" }}>
+                <div key={n.id} className="navitem" onClick={() => { setPage(n.id); setSelectedRegion(null); setSelectedArea(null); setSelectedCustomer(null); setSidebarOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, marginBottom: 3, cursor: "pointer", background: active ? "rgba(31,111,235,0.22)" : "transparent", borderLeft: active ? `3px solid ${COLORS.blue}` : "3px solid transparent" }}>
                   <Icon size={16} color={active ? "#fff" : "#8FA8C4"} />
                   <span style={{ fontFamily: "Inter, sans-serif", fontSize: 12.8, fontWeight: active ? 700 : 500, color: active ? "#fff" : "#B9C9DC" }}>{n.label}</span>
                 </div>
@@ -817,8 +843,8 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
           <div style={{ padding: isMobile ? "14px 12px 40px" : "22px 26px 60px", flex: 1, minWidth: 0 }}>
             {page === "executive" && <ExecutivePage alerts={alerts} goRegion={goRegion} drillCustomer={drillCustomer} />}
             {page === "regional" && <RegionalPage region={region} drillRegion={drillRegion} />}
-            {page === "area" && <AreaPage region={region} area={area} drillArea={drillArea} drillCustomer={drillCustomer} setSelectedRegion={setSelectedRegion} />}
-            {page === "customer" && <CustomerPage customer={customer} search={custSearch} drillCustomer={drillCustomer} />}
+            {page === "area" && <AreaPage region={region} area={area} drillArea={drillArea} drillCustomer={drillCustomer} setSelectedRegion={setSelectedRegion} clearAreaDrilldown={clearAreaDrilldown} clearIslandOnly={clearIslandOnly} />}
+            {page === "customer" && <CustomerPage customer={customer} search={custSearch} drillCustomer={drillCustomer} clearCustomerDrilldown={clearCustomerDrilldown} />}
             {page === "product" && <ProductPage />}
             {page === "brand" && <BrandPage />}
             {page === "reps" && <RepsPage />}
@@ -1170,10 +1196,29 @@ function PenetrationCard({ region, drillCustomer, isMobile }) {
   );
 }
 
+function Breadcrumb({ items }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
+      {items.map((it, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && <ChevronRight size={13} color={COLORS.textMuted} />}
+          {it.onClick ? (
+            <span onClick={it.onClick} className="rowclick" style={{ fontSize: 12.5, fontWeight: 700, color: COLORS.blue, cursor: "pointer", padding: "2px 6px", borderRadius: 6 }}>
+              {i === 0 ? "← " : ""}{it.label}
+            </span>
+          ) : (
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: COLORS.textPrimary, padding: "2px 6px" }}>{it.label}</span>
+          )}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------
    AREA PAGE
 ------------------------------------------------------------------*/
-function AreaPage({ region, area, drillArea, drillCustomer, setSelectedRegion }) {
+function AreaPage({ region, area, drillArea, drillCustomer, setSelectedRegion, clearAreaDrilldown, clearIslandOnly }) {
   const isMobile = useIsMobile();
   const { REGIONS } = useContext(DataContext);
   if (!region) {
@@ -1193,6 +1238,19 @@ function AreaPage({ region, area, drillArea, drillCustomer, setSelectedRegion })
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <Breadcrumb
+        items={
+          area
+            ? [
+                { label: "Regional Overview", onClick: clearAreaDrilldown },
+                { label: region.name, onClick: clearIslandOnly },
+                { label: area.name },
+              ]
+            : [
+                { label: "Back to Regional Overview", onClick: clearAreaDrilldown },
+              ]
+        }
+      />
       <Card title={`${region.name} — Area Breakdown`} subtitle="Click a row to open the customer scorecard list for that area">
         <table>
           <thead><tr><Th>Area</Th><Th align="right">Customers</Th><Th align="right">Sales</Th><Th align="right">Target</Th><Th align="right">Achievement</Th><Th align="right">Portfolio %</Th><Th align="right">Coverage %</Th><Th>Sales Rep</Th><Th align="right">Last Visit</Th></tr></thead>
@@ -1245,7 +1303,7 @@ function AreaPage({ region, area, drillArea, drillCustomer, setSelectedRegion })
 /* ---------------------------------------------------------------
    CUSTOMER PAGE
 ------------------------------------------------------------------*/
-function CustomerPage({ customer, search, drillCustomer }) {
+function CustomerPage({ customer, search, drillCustomer, clearCustomerDrilldown }) {
   const isMobile = useIsMobile();
   const { ALL_CUSTOMERS, TOTAL_CUSTOMERS, TREND, BRAND_DIST } = useContext(DataContext);
   const filtered = search ? ALL_CUSTOMERS.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()) || c.code.toLowerCase().includes(search.toLowerCase())) : ALL_CUSTOMERS;
@@ -1279,6 +1337,7 @@ function CustomerPage({ customer, search, drillCustomer }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <Breadcrumb items={[{ label: "Back to Customer List", onClick: clearCustomerDrilldown }]} />
       <Card>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16 }}>
           <div>
