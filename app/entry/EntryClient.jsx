@@ -1,5 +1,5 @@
 "use client";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "../../lib/supabaseClient";
 
@@ -31,6 +31,15 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
   const [loadingChecklist, setLoadingChecklist] = useState(false);
   const [hadSale, setHadSale] = useState(null); // null = not answered yet, true/false once picked
   const [stockChecks, setStockChecks] = useState({}); // { [sku_id]: boolean }
+
+  // Invoice scanning: fileRef -> upload -> parse -> review/edit -> submit.
+  const invoiceFileInputRef = useRef(null);
+  const [showInvoiceUpload, setShowInvoiceUpload] = useState(false);
+  const [invoiceFile, setInvoiceFile] = useState(null);
+  const [invoicePreviewUrl, setInvoicePreviewUrl] = useState(null);
+  const [invoiceParsing, setInvoiceParsing] = useState(false);
+  const [invoiceError, setInvoiceError] = useState("");
+  const [invoiceReview, setInvoiceReview] = useState(null); // populated once parsing succeeds
 
   const atollNames = [...new Set((atolls || []).map((a) => a.atoll_name))];
   const islandsByAtoll = (atolls || []).reduce((acc, a) => {
@@ -130,6 +139,123 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
 
   const signOut = async () => { await supabase.auth.signOut(); router.push("/login"); router.refresh(); };
 
+  // --- Invoice scanning -------------------------------------------------
+  const openInvoiceUpload = () => {
+    setInvoiceFile(null); setInvoicePreviewUrl(null); setInvoiceError(""); setInvoiceReview(null);
+    setShowInvoiceUpload(true);
+  };
+  const closeInvoiceUpload = () => {
+    if (invoicePreviewUrl) URL.revokeObjectURL(invoicePreviewUrl);
+    setShowInvoiceUpload(false); setInvoiceFile(null); setInvoicePreviewUrl(null); setInvoiceError(""); setInvoiceReview(null);
+  };
+
+  const handleInvoiceFileChosen = (file) => {
+    if (!file) return;
+    setInvoiceError("");
+    setInvoiceFile(file);
+    setInvoicePreviewUrl(URL.createObjectURL(file));
+  };
+
+  const parseInvoice = async () => {
+    if (!invoiceFile) return;
+    setInvoiceParsing(true);
+    setInvoiceError("");
+    try {
+      const formData = new FormData();
+      formData.append("file", invoiceFile);
+      const resp = await fetch("/api/parse-invoice", { method: "POST", body: formData });
+      const body = await resp.json().catch(() => null);
+      if (!resp.ok || !body || body.error) {
+        setInvoiceError(body?.error || "Could not read that invoice. Try a clearer photo, or enter it manually.");
+        setInvoiceParsing(false);
+        return;
+      }
+      const { parsed, match, warnings, invoice_image_path } = body;
+      setInvoiceReview({
+        customerId: match.customer_id || "",
+        customerCandidates: match.customer_candidates || [],
+        invoiceNumber: parsed.invoice_number || "",
+        date: parsed.date || new Date().toISOString().slice(0, 10),
+        paymentStatus: parsed.payment_status || "paid",
+        items: match.items.map((it, i) => ({
+          key: i, skuId: it.matched_sku_id || "", descriptionRaw: it.description || it.sku_code_raw || "Unrecognized item",
+          quantity: it.quantity || 1, unitPrice: it.unit_price || 0, matched: it.matched,
+        })),
+        aiGrandTotal: parsed.grand_total,
+        warnings: warnings || [],
+        invoiceImagePath: invoice_image_path || null,
+      });
+    } catch {
+      setInvoiceError("Could not reach the server. Check your connection and try again.");
+    }
+    setInvoiceParsing(false);
+  };
+
+  const updateInvoiceItem = (key, patch) => {
+    setInvoiceReview((prev) => ({ ...prev, items: prev.items.map((it) => (it.key === key ? { ...it, ...patch } : it)) }));
+  };
+  const removeInvoiceItem = (key) => {
+    setInvoiceReview((prev) => ({ ...prev, items: prev.items.filter((it) => it.key !== key) }));
+  };
+
+  const invoiceComputedTotal = invoiceReview
+    ? Math.round(invoiceReview.items.reduce((s, it) => s + Number(it.quantity || 0) * Number(it.unitPrice || 0), 0) * 100) / 100
+    : 0;
+
+  const submitInvoice = async (e) => {
+    e.preventDefault();
+    if (!invoiceReview?.customerId) { setInvoiceError("Select which customer this invoice belongs to before saving."); return; }
+    setSaving(true);
+    const gp = Math.round(invoiceComputedTotal * DEFAULT_GP_MARGIN);
+
+    const { data: entryRows, error: entryErr } = await supabase.from("sales_entries").insert({
+      customer_id: invoiceReview.customerId,
+      rep_id: profile.id,
+      entry_date: invoiceReview.date,
+      sale_amount: invoiceComputedTotal,
+      gp,
+      outstanding_collected: invoiceReview.paymentStatus === "paid" ? invoiceComputedTotal : 0,
+      visit_notes: "Logged from scanned invoice",
+      invoice_number: invoiceReview.invoiceNumber || null,
+      payment_status: invoiceReview.paymentStatus,
+      invoice_image_path: invoiceReview.invoiceImagePath,
+    }).select("id").single();
+
+    if (entryErr) { setSaving(false); setInvoiceError("Could not save this invoice — " + entryErr.message); return; }
+
+    const lineItems = invoiceReview.items
+      .filter((it) => Number(it.quantity) > 0)
+      .map((it) => ({
+        sales_entry_id: entryRows.id,
+        sku_id: it.skuId || null,
+        sku_code_raw: it.descriptionRaw,
+        quantity: Number(it.quantity) || 0,
+        unit_price: Number(it.unitPrice) || 0,
+        line_total: Math.round(Number(it.quantity || 0) * Number(it.unitPrice || 0) * 100) / 100,
+      }));
+    if (lineItems.length) {
+      const { error: itemsErr } = await supabase.from("sale_line_items").insert(lineItems);
+      if (itemsErr) { setSaving(false); setInvoiceError("Invoice saved, but line items didn't save: " + itemsErr.message); return; }
+    }
+
+    // Items the AI matched to a real SKU are now known to be on this
+    // customer's shelf — reflect that in their stock checklist.
+    const matchedSkuIds = [...new Set(invoiceReview.items.filter((it) => it.skuId).map((it) => it.skuId))];
+    if (matchedSkuIds.length) {
+      const stockRows = matchedSkuIds.map((skuId) => ({
+        customer_id: invoiceReview.customerId, sku_id: skuId, in_stock: true,
+        updated_by: profile.id, updated_at: new Date().toISOString(),
+      }));
+      await supabase.from("customer_sku_stock").upsert(stockRows, { onConflict: "customer_id,sku_id" });
+    }
+
+    setSaving(false);
+    setToast("Invoice saved");
+    closeInvoiceUpload();
+    router.refresh();
+    setTimeout(() => setToast(""), 2500);
+  };
+
   return (
     <div style={{ minHeight: "100vh", background: "#F4F7FB", paddingBottom: 40 }}>
       {/* Header */}
@@ -158,10 +284,13 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
         </div>
       </div>
 
-      {/* Add customer button */}
-      <div style={{ padding: "10px 16px" }}>
-        <button onClick={() => setShowNewCustomer(true)} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `1.5px dashed ${C.blue}`, background: C.blueSoft, color: C.blue, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+      {/* Add customer / scan invoice */}
+      <div style={{ padding: "10px 16px", display: "flex", gap: 10 }}>
+        <button onClick={() => setShowNewCustomer(true)} style={{ flex: 1, padding: "11px", borderRadius: 10, border: `1.5px dashed ${C.blue}`, background: C.blueSoft, color: C.blue, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
           + Add New Customer
+        </button>
+        <button onClick={openInvoiceUpload} style={{ flex: 1, padding: "11px", borderRadius: 10, border: `1.5px dashed ${C.green}`, background: C.greenSoft, color: C.green, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+          Scan Invoice
         </button>
       </div>
 
@@ -306,6 +435,154 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
 
       {toast && (
         <div style={{ position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)", background: C.navy, color: "#fff", padding: "10px 18px", borderRadius: 999, fontSize: 12.5, fontWeight: 600, zIndex: 30 }}>{toast}</div>
+      )}
+
+      {/* Invoice scan modal */}
+      {showInvoiceUpload && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(11,32,54,0.4)", display: "flex", alignItems: "flex-end", zIndex: 20 }} onClick={closeInvoiceUpload}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", width: "100%", maxHeight: "92vh", overflowY: "auto", borderRadius: "18px 18px 0 0", padding: "20px 20px calc(28px + env(safe-area-inset-bottom))" }}>
+            <div style={{ fontFamily: "Manrope", fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 18 }}>Scan Invoice</div>
+
+            {!invoiceReview && (
+              <>
+                <input
+                  ref={invoiceFileInputRef} type="file" accept="image/png,image/jpeg,image/webp" capture="environment"
+                  style={{ display: "none" }}
+                  onChange={(e) => handleInvoiceFileChosen(e.target.files?.[0] || null)}
+                />
+                {!invoicePreviewUrl && (
+                  <button
+                    type="button" onClick={() => invoiceFileInputRef.current?.click()}
+                    style={{ width: "100%", padding: "34px 16px", borderRadius: 12, border: `1.5px dashed ${C.line}`, background: "#F4F7FB", color: C.muted, fontWeight: 600, fontSize: 13, cursor: "pointer", marginBottom: 14 }}
+                  >
+                    Tap to take a photo or choose an image<br />
+                    <span style={{ fontSize: 11, fontWeight: 500 }}>PNG or JPG — PDF isn't supported yet</span>
+                  </button>
+                )}
+                {invoicePreviewUrl && (
+                  <div style={{ marginBottom: 14 }}>
+                    <img src={invoicePreviewUrl} alt="Invoice preview" style={{ width: "100%", maxHeight: 320, objectFit: "contain", borderRadius: 12, border: `1px solid ${C.line}`, background: "#F4F7FB" }} />
+                    <button type="button" onClick={() => invoiceFileInputRef.current?.click()} style={{ marginTop: 8, fontSize: 12, fontWeight: 700, color: C.blue, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                      Choose a different photo
+                    </button>
+                  </div>
+                )}
+                {invoiceError && <div style={{ background: C.redSoft, color: C.red, fontSize: 12.5, fontWeight: 600, padding: "10px 12px", borderRadius: 9, marginBottom: 14 }}>{invoiceError}</div>}
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button type="button" onClick={closeInvoiceUpload} style={{ flex: 1, padding: "12px", borderRadius: 10, border: `1px solid ${C.line}`, background: "#fff", color: C.text, fontWeight: 700, fontSize: 14 }}>Cancel</button>
+                  <button type="button" onClick={parseInvoice} disabled={!invoiceFile || invoiceParsing} style={{ flex: 2, padding: "12px", borderRadius: 10, border: "none", background: C.green, color: "#fff", fontWeight: 700, fontSize: 14, opacity: (!invoiceFile || invoiceParsing) ? 0.6 : 1 }}>
+                    {invoiceParsing ? "Reading invoice…" : "Read Invoice"}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {invoiceReview && (
+              <form onSubmit={submitInvoice}>
+                {invoicePreviewUrl && (
+                  <img src={invoicePreviewUrl} alt="Invoice preview" style={{ width: "100%", maxHeight: 220, objectFit: "contain", borderRadius: 12, border: `1px solid ${C.line}`, background: "#F4F7FB", marginBottom: 14 }} />
+                )}
+
+                {invoiceReview.warnings.length > 0 && (
+                  <div style={{ background: C.amberSoft, color: C.amber, fontSize: 12, fontWeight: 600, padding: "10px 12px", borderRadius: 9, marginBottom: 14, lineHeight: 1.5 }}>
+                    {invoiceReview.warnings.map((w, i) => <div key={i}>• {w}</div>)}
+                  </div>
+                )}
+
+                <label style={{ fontSize: 12, fontWeight: 700, color: C.text, display: "block", marginBottom: 6 }}>Customer *</label>
+                <select
+                  required value={invoiceReview.customerId}
+                  onChange={(e) => setInvoiceReview({ ...invoiceReview, customerId: e.target.value })}
+                  style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: `1.5px solid ${invoiceReview.customerId ? C.line : C.red}`, fontSize: 16, marginBottom: 4, fontFamily: "Inter" }}
+                >
+                  <option value="">
+                    {invoiceReview.customerCandidates.length ? "Not auto-matched — pick manually" : "Select customer…"}
+                  </option>
+                  {customers.map((c) => <option key={c.id} value={c.id}>{c.name} — {c.area}</option>)}
+                </select>
+                {!invoiceReview.customerId && invoiceReview.customerCandidates.length > 0 && (
+                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 14 }}>
+                    Did you mean: {invoiceReview.customerCandidates.map((c) => c.name).join(", ")}?
+                  </div>
+                )}
+                {(invoiceReview.customerId || !invoiceReview.customerCandidates.length) && <div style={{ marginBottom: 10 }} />}
+
+                <Field label="Invoice number" value={invoiceReview.invoiceNumber} onChange={(v) => setInvoiceReview({ ...invoiceReview, invoiceNumber: v })} />
+                <Field label="Date" type="date" value={invoiceReview.date} onChange={(v) => setInvoiceReview({ ...invoiceReview, date: v })} />
+
+                <label style={{ fontSize: 12, fontWeight: 700, color: C.text, display: "block", marginBottom: 6 }}>Payment status</label>
+                <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                  {["paid", "pending", "partial"].map((s) => (
+                    <button
+                      type="button" key={s} onClick={() => setInvoiceReview({ ...invoiceReview, paymentStatus: s })}
+                      style={{ flex: 1, padding: "9px", borderRadius: 9, border: `1.5px solid ${invoiceReview.paymentStatus === s ? C.blue : C.line}`, background: invoiceReview.paymentStatus === s ? C.blueSoft : "#fff", color: invoiceReview.paymentStatus === s ? C.blue : C.text, fontWeight: 700, fontSize: 12.5, textTransform: "capitalize" }}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <span style={{ fontFamily: "Manrope", fontWeight: 800, fontSize: 13.5, color: C.text }}>Items</span>
+                  {invoiceReview.aiGrandTotal != null && Math.abs(invoiceReview.aiGrandTotal - invoiceComputedTotal) > 0.5 && (
+                    <span style={{ fontSize: 10.5, fontWeight: 700, color: C.amber }}>Invoice shows MVR {invoiceReview.aiGrandTotal} — check quantities/prices</span>
+                  )}
+                </div>
+
+                {invoiceReview.items.map((it) => (
+                  <div key={it.key} style={{ border: `1px solid ${it.matched ? C.line : C.amber}`, borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: C.text, flex: 1 }}>{it.descriptionRaw}</div>
+                      <button type="button" onClick={() => removeInvoiceItem(it.key)} style={{ background: "none", border: "none", color: C.red, fontSize: 11, fontWeight: 700, cursor: "pointer", padding: "0 0 0 8px" }}>Remove</button>
+                    </div>
+                    {!it.matched && (
+                      <select
+                        value={it.skuId} onChange={(e) => updateInvoiceItem(it.key, { skuId: e.target.value })}
+                        style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: `1px solid ${C.amber}`, fontSize: 13, marginBottom: 8, fontFamily: "Inter", background: C.amberSoft }}
+                      >
+                        <option value="">Not matched — pick the product manually</option>
+                        {Object.entries(skusByBrand).map(([brand, brandSkus]) => (
+                          <optgroup key={brand} label={brand}>
+                            {brandSkus.map((s) => <option key={s.id} value={s.id}>{s.sku}</option>)}
+                          </optgroup>
+                        ))}
+                      </select>
+                    )}
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ fontSize: 10.5, color: C.muted, fontWeight: 600 }}>Qty</label>
+                        <input type="number" value={it.quantity} onChange={(e) => updateInvoiceItem(it.key, { quantity: e.target.value })} style={{ width: "100%", padding: "7px 9px", borderRadius: 7, border: `1px solid ${C.line}`, fontSize: 15 }} />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ fontSize: 10.5, color: C.muted, fontWeight: 600 }}>Unit price</label>
+                        <input type="number" value={it.unitPrice} onChange={(e) => updateInvoiceItem(it.key, { unitPrice: e.target.value })} style={{ width: "100%", padding: "7px 9px", borderRadius: 7, border: `1px solid ${C.line}`, fontSize: 15 }} />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ fontSize: 10.5, color: C.muted, fontWeight: 600 }}>Line total</label>
+                        <div style={{ padding: "7px 9px", fontSize: 15, fontWeight: 700, color: C.text }}>MVR {(Number(it.quantity || 0) * Number(it.unitPrice || 0)).toFixed(2)}</div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {!invoiceReview.items.length && <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>No items left — add them back by re-scanning, or save as a plain visit instead.</div>}
+
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderTop: `1px solid ${C.line}`, marginTop: 4, marginBottom: 14 }}>
+                  <span style={{ fontFamily: "Manrope", fontWeight: 800, fontSize: 14, color: C.text }}>Total</span>
+                  <span style={{ fontFamily: "Manrope", fontWeight: 800, fontSize: 18, color: C.green }}>MVR {invoiceComputedTotal.toFixed(2)}</span>
+                </div>
+
+                {invoiceError && <div style={{ background: C.redSoft, color: C.red, fontSize: 12.5, fontWeight: 600, padding: "10px 12px", borderRadius: 9, marginBottom: 14 }}>{invoiceError}</div>}
+
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button type="button" onClick={closeInvoiceUpload} style={{ flex: 1, padding: "12px", borderRadius: 10, border: `1px solid ${C.line}`, background: "#fff", color: C.text, fontWeight: 700, fontSize: 14 }}>Cancel</button>
+                  <button type="submit" disabled={saving || !invoiceReview.customerId || !invoiceReview.items.length} style={{ flex: 2, padding: "12px", borderRadius: 10, border: "none", background: C.blue, color: "#fff", fontWeight: 700, fontSize: 14, opacity: (saving || !invoiceReview.customerId || !invoiceReview.items.length) ? 0.6 : 1 }}>
+                    {saving ? "Saving…" : "Save Invoice"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

@@ -56,6 +56,22 @@ This is purely for editing/testing — deploying to reps still goes through Verc
    (same values from step 1.3)
 4. Deploy. Vercel gives you a URL — that's what you share with reps for daily entry, and what you use yourself for `/admin`.
 
+## 5. Invoice scanning (optional)
+
+Reps can tap "Scan Invoice" in the entry app, photograph a paper invoice, and get the customer/items/totals pre-filled instead of typing everything by hand. They review and correct the results before anything saves — nothing goes into the database automatically without a rep confirming it first.
+
+**Setup:**
+1. Get an API key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys) (this feature uses GPT-4o vision — costs a small amount per scan, check OpenAI's current pricing)
+2. Add `OPENAI_API_KEY` to your Vercel project's Environment Variables (same place as the Supabase keys)
+3. Run `supabase/migration_004_invoice_parsing.sql` in the SQL Editor — adds invoice number/payment status to `sales_entries`, a new `sale_line_items` table for per-product detail, and a private Storage bucket to keep the scanned image on file
+4. Redeploy
+
+**Known limitations, worth knowing before rolling this out:**
+- **Images only (PNG/JPG), not PDF.** Vision models read images, not raw PDF files, and rendering a PDF to an image reliably on Vercel's serverless functions needs native dependencies I didn't want to ship unverified. If a rep has a PDF invoice, they should photograph it instead.
+- **Accuracy depends on photo quality.** Blurry or angled photos will produce incomplete or wrong reads — the review screen exists specifically so a rep always checks before it saves, and low-confidence reads come back with visible warnings.
+- **Customer/product matching is exact-or-fuzzy text matching**, not fuzzy AI matching — if an invoice's customer or product name doesn't reasonably resemble what's in your database, the rep picks it manually from a dropdown rather than the system guessing.
+- I could not test the live OpenAI call from my end (no API key, no network access to `api.openai.com` in my environment) — the matching/database logic is unit-tested (`lib/__tests__/invoiceMatching.test.js`, run with `node lib/__tests__/invoiceMatching.test.js`), but the actual invoice-reading accuracy is something you'll need to validate with a few real invoices after deploying.
+
 ## What reps see vs what you see
 
 | | Reps (`/entry`) | You (`/admin`) |
