@@ -37,9 +37,9 @@ Rules:
 
 export async function POST(request) {
   try {
-    if (!process.env.OPENAI_API_KEY) {
+    if (!process.env.ANTHROPIC_API_KEY) {
       return NextResponse.json(
-        { error: "Invoice scanning isn't set up yet — ask your admin to add an OPENAI_API_KEY to the server." },
+        { error: "Invoice scanning isn't set up yet — ask your admin to add an ANTHROPIC_API_KEY to the server." },
         { status: 500 }
       );
     }
@@ -79,9 +79,8 @@ export async function POST(request) {
 
     const arrayBuffer = await file.arrayBuffer();
     const base64 = Buffer.from(arrayBuffer).toString("base64");
-    const dataUrl = `data:${file.type};base64,${base64}`;
 
-    const extraction = await extractInvoiceWithOpenAI(dataUrl);
+    const extraction = await extractInvoiceWithClaude(base64, file.type);
     if (extraction.error) {
       return NextResponse.json({ error: extraction.error }, { status: 502 });
     }
@@ -123,30 +122,29 @@ export async function POST(request) {
   }
 }
 
-async function extractInvoiceWithOpenAI(dataUrl) {
+async function extractInvoiceWithClaude(base64, mediaType) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45000);
 
   let resp;
   try {
-    resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    resp = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       signal: controller.signal,
       headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "content-type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
-        response_format: { type: "json_object" },
-        temperature: 0,
+        model: "claude-haiku-4-5-20251001", // fast + cheap, matters a lot under Vercel's function time limit
         max_tokens: 1500,
         messages: [
           {
             role: "user",
             content: [
+              { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
               { type: "text", text: EXTRACTION_PROMPT },
-              { type: "image_url", image_url: { url: dataUrl } },
             ],
           },
         ],
@@ -173,14 +171,18 @@ async function extractInvoiceWithOpenAI(dataUrl) {
     return { error: "The invoice-reading service returned an unreadable response." };
   }
 
-  const content = json?.choices?.[0]?.message?.content;
-  if (!content) {
+  const rawText = json?.content?.find((block) => block.type === "text")?.text;
+  if (!rawText) {
     return { error: "The invoice-reading service returned an empty response." };
   }
 
+  // Claude reliably follows "JSON only" instructions but occasionally wraps
+  // the answer in a ```json fence anyway — strip that defensively before parsing.
+  const cleaned = rawText.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+
   let data;
   try {
-    data = JSON.parse(content);
+    data = JSON.parse(cleaned);
   } catch {
     return { error: "Could not understand the invoice-reading service's response. Try again, or enter this invoice manually." };
   }
