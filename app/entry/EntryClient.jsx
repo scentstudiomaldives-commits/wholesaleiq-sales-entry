@@ -137,13 +137,19 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
   const signOut = async () => { await supabase.auth.signOut(); router.push("/login"); router.refresh(); };
 
   // --- Invoice scanning -------------------------------------------------
-  const openInvoiceUpload = () => {
+  // presetCustomer is set when scanning is launched from a specific
+  // customer's visit entry (via "Yes, they bought") — the customer is
+  // already known, so we lock it in rather than making the rep pick it
+  // again after the scan comes back.
+  const [invoicePresetCustomer, setInvoicePresetCustomer] = useState(null);
+  const openInvoiceUpload = (presetCustomer = null) => {
     setInvoiceFile(null); setInvoicePreviewUrl(null); setInvoiceError(""); setInvoiceReview(null);
+    setInvoicePresetCustomer(presetCustomer);
     setShowInvoiceUpload(true);
   };
   const closeInvoiceUpload = () => {
     if (invoicePreviewUrl) URL.revokeObjectURL(invoicePreviewUrl);
-    setShowInvoiceUpload(false); setInvoiceFile(null); setInvoicePreviewUrl(null); setInvoiceError(""); setInvoiceReview(null);
+    setShowInvoiceUpload(false); setInvoiceFile(null); setInvoicePreviewUrl(null); setInvoiceError(""); setInvoiceReview(null); setInvoicePresetCustomer(null);
   };
 
   // Phone camera photos are often 3000px+ wide — way more detail than a
@@ -204,8 +210,8 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
       }
       const { parsed, match, warnings, invoice_image_path } = body;
       setInvoiceReview({
-        customerId: match.customer_id || "",
-        customerCandidates: match.customer_candidates || [],
+        customerId: invoicePresetCustomer?.id || match.customer_id || "",
+        customerCandidates: invoicePresetCustomer ? [] : (match.customer_candidates || []),
         invoiceNumber: parsed.invoice_number || "",
         date: parsed.date || new Date().toISOString().slice(0, 10),
         paymentStatus: parsed.payment_status || "paid",
@@ -396,8 +402,8 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
             <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
               <button
                 type="button"
-                onClick={() => setHadSale(true)}
-                style={{ flex: 1, padding: 12, borderRadius: 10, border: `1.5px solid ${hadSale === true ? C.green : C.line}`, background: hadSale === true ? C.greenSoft : "#fff", color: hadSale === true ? C.green : C.text, fontWeight: 700, fontSize: 14 }}
+                onClick={() => { const c = selected; setSelected(null); openInvoiceUpload(c); }}
+                style={{ flex: 1, padding: 12, borderRadius: 10, border: `1.5px solid ${C.green}`, background: C.greenSoft, color: C.green, fontWeight: 700, fontSize: 14 }}
               >
                 Yes, they bought
               </button>
@@ -409,23 +415,19 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
                 No sale today
               </button>
             </div>
-
-            {hadSale === true && (
-              <div style={{ borderLeft: `3px solid ${C.greenSoft}`, paddingLeft: 12 }}>
-                <Field label="Sale amount (MVR)" type="number" required value={form.sale_amount} onChange={(v) => setForm({ ...form, sale_amount: v })} />
-              </div>
-            )}
-
-            <Field label="Outstanding collected (MVR)" type="number" value={form.outstanding_collected} onChange={(v) => setForm({ ...form, outstanding_collected: v })} />
-            <Field label="Next follow-up date" type="date" value={form.next_visit_date} onChange={(v) => setForm({ ...form, next_visit_date: v })} />
-            <label style={{ fontSize: 12, fontWeight: 700, color: C.text, display: "block", marginBottom: 6, marginTop: 4 }}>Visit notes</label>
-            <textarea rows={2} value={form.visit_notes} onChange={(e) => setForm({ ...form, visit_notes: e.target.value })} style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: `1px solid ${C.line}`, fontSize: 16, fontFamily: "Inter", marginBottom: 6, resize: "none" }} />
-            <div style={{ fontSize: 11, color: C.muted, marginBottom: 18 }}>Need to record what's on their shelf? Cancel this and use "Scan Invoice" instead — it updates their stock checklist automatically.</div>
-
-            <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-              <button type="button" onClick={() => setSelected(null)} style={{ flex: 1, padding: "12px", borderRadius: 10, border: `1px solid ${C.line}`, background: "#fff", color: C.text, fontWeight: 700, fontSize: 14 }}>Cancel</button>
-              <button type="submit" disabled={saving || hadSale === null} style={{ flex: 2, padding: "12px", borderRadius: 10, border: "none", background: C.blue, color: "#fff", fontWeight: 700, fontSize: 14, opacity: (saving || hadSale === null) ? 0.6 : 1 }}>{saving ? "Saving…" : "Save Visit"}</button>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: hadSale === false ? 18 : 0 }}>
+              "Yes" opens Scan Invoice for {selected.name} — no need to type the sale in by hand.
             </div>
+
+            {hadSale === false && (
+              <>
+                <Field label="Next follow-up date" type="date" value={form.next_visit_date} onChange={(v) => setForm({ ...form, next_visit_date: v })} />
+                <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+                  <button type="button" onClick={() => setSelected(null)} style={{ flex: 1, padding: "12px", borderRadius: 10, border: `1px solid ${C.line}`, background: "#fff", color: C.text, fontWeight: 700, fontSize: 14 }}>Cancel</button>
+                  <button type="submit" disabled={saving} style={{ flex: 2, padding: "12px", borderRadius: 10, border: "none", background: C.blue, color: "#fff", fontWeight: 700, fontSize: 14, opacity: saving ? 0.6 : 1 }}>{saving ? "Saving…" : "Save Visit"}</button>
+                </div>
+              </>
+            )}
           </form>
         </div>
       )}
@@ -479,7 +481,9 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
       {showInvoiceUpload && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(11,32,54,0.4)", display: "flex", alignItems: "flex-end", zIndex: 20 }} onClick={closeInvoiceUpload}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", width: "100%", maxHeight: "92vh", overflowY: "auto", borderRadius: "18px 18px 0 0", padding: "20px 20px calc(28px + env(safe-area-inset-bottom))" }}>
-            <div style={{ fontFamily: "Manrope", fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 18 }}>Scan Invoice</div>
+            <div style={{ fontFamily: "Manrope", fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 2 }}>Scan Invoice</div>
+            {invoicePresetCustomer && <div style={{ fontSize: 12, color: C.muted, marginBottom: 16 }}>For {invoicePresetCustomer.name} — {invoicePresetCustomer.area}, {invoicePresetCustomer.region}</div>}
+            {!invoicePresetCustomer && <div style={{ marginBottom: 18 }} />}
 
             {!invoiceReview && (
               <>
