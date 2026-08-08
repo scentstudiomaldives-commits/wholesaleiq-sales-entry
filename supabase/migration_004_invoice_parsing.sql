@@ -23,8 +23,10 @@ create table if not exists sale_line_items (
 create index if not exists idx_sale_line_items_entry on sale_line_items(sales_entry_id);
 
 alter table sale_line_items enable row level security;
+drop policy if exists "sale_line_items_select" on sale_line_items;
 create policy "sale_line_items_select" on sale_line_items for select
   using (exists (select 1 from sales_entries se where se.id = sales_entry_id and (se.rep_id = auth.uid() or is_admin())));
+drop policy if exists "sale_line_items_insert" on sale_line_items;
 create policy "sale_line_items_insert" on sale_line_items for insert
   with check (exists (select 1 from sales_entries se where se.id = sales_entry_id and se.rep_id = auth.uid()));
 
@@ -35,7 +37,9 @@ on conflict (id) do nothing;
 
 -- Reps can upload/read their own invoice images (path convention:
 -- invoices/{rep_id}/{filename}); admins can read all.
+drop policy if exists "invoices_rep_upload" on storage.objects;
 create policy "invoices_rep_upload" on storage.objects for insert
   with check (bucket_id = 'invoices' and (storage.foldername(name))[1] = auth.uid()::text);
+drop policy if exists "invoices_rep_read_own" on storage.objects;
 create policy "invoices_rep_read_own" on storage.objects for select
   using (bucket_id = 'invoices' and ((storage.foldername(name))[1] = auth.uid()::text or is_admin()));

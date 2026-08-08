@@ -32,6 +32,16 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
   const [hadSale, setHadSale] = useState(null); // null = not answered yet, true/false once picked
   const [stockChecks, setStockChecks] = useState({}); // { [sku_id]: boolean }
 
+  // Refs update instantly; state-driven `disabled` on a button only takes
+  // effect on the next render, which leaves a real gap for a fast
+  // double-tap (very common on phones) to fire a handler twice before the
+  // button visually locks. Each submit-style action checks its own ref
+  // synchronously, first line, before doing anything else.
+  const submittingVisitRef = useRef(false);
+  const submittingCustomerRef = useRef(false);
+  const parsingInvoiceRef = useRef(false);
+  const submittingInvoiceRef = useRef(false);
+
   // Invoice scanning: fileRef -> upload -> parse -> review/edit -> submit.
   const invoiceFileInputRef = useRef(null);
   const [showInvoiceUpload, setShowInvoiceUpload] = useState(false);
@@ -86,55 +96,67 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
 
   const submitEntry = async (e) => {
     e.preventDefault();
+    if (submittingVisitRef.current) return;
+    submittingVisitRef.current = true;
     setSaving(true);
-    const totalSkus = (skus || []).length;
-    const checkedCount = Object.values(stockChecks).filter(Boolean).length;
-    const portfolioPct = totalSkus ? Math.round((checkedCount / totalSkus) * 100) : null;
+    try {
+      const totalSkus = (skus || []).length;
+      const checkedCount = Object.values(stockChecks).filter(Boolean).length;
+      const portfolioPct = totalSkus ? Math.round((checkedCount / totalSkus) * 100) : null;
 
-    const { error } = await supabase.from("sales_entries").insert({
-      customer_id: selected.id,
-      rep_id: profile.id,
-      sale_amount: hadSale ? Number(form.sale_amount) || 0 : 0,
-      gp: hadSale ? Math.round((Number(form.sale_amount) || 0) * DEFAULT_GP_MARGIN) : 0,
-      portfolio_pct: portfolioPct,
-      outstanding_collected: Number(form.outstanding_collected) || 0,
-      visit_notes: form.visit_notes || null,
-      next_visit_date: form.next_visit_date || null,
-    });
-    if (error) { setSaving(false); setToast("Could not save — check your connection and try again."); return; }
+      const { error } = await supabase.from("sales_entries").insert({
+        customer_id: selected.id,
+        rep_id: profile.id,
+        sale_amount: hadSale ? Number(form.sale_amount) || 0 : 0,
+        gp: hadSale ? Math.round((Number(form.sale_amount) || 0) * DEFAULT_GP_MARGIN) : 0,
+        portfolio_pct: portfolioPct,
+        outstanding_collected: Number(form.outstanding_collected) || 0,
+        visit_notes: form.visit_notes || null,
+        next_visit_date: form.next_visit_date || null,
+      });
+      if (error) { setToast("Could not save — check your connection and try again."); return; }
 
-    if ((skus || []).length) {
-      const stockRows = skus.map((s) => ({
-        customer_id: selected.id, sku_id: s.id, in_stock: !!stockChecks[s.id],
-        updated_by: profile.id, updated_at: new Date().toISOString(),
-      }));
-      const { error: stockErr } = await supabase.from("customer_sku_stock").upsert(stockRows, { onConflict: "customer_id,sku_id" });
-      if (stockErr) { setSaving(false); setToast("Visit saved, but the stock checklist didn't save — try re-opening this customer."); setSelected(null); router.refresh(); setTimeout(() => setToast(""), 3500); return; }
+      if ((skus || []).length) {
+        const stockRows = skus.map((s) => ({
+          customer_id: selected.id, sku_id: s.id, in_stock: !!stockChecks[s.id],
+          updated_by: profile.id, updated_at: new Date().toISOString(),
+        }));
+        const { error: stockErr } = await supabase.from("customer_sku_stock").upsert(stockRows, { onConflict: "customer_id,sku_id" });
+        if (stockErr) { setToast("Visit saved, but the stock checklist didn't save — try re-opening this customer."); setSelected(null); router.refresh(); setTimeout(() => setToast(""), 3500); return; }
+      }
+
+      setToast(`Saved: ${selected.name}`);
+      setSelected(null);
+      router.refresh();
+      setTimeout(() => setToast(""), 2500);
+    } finally {
+      setSaving(false);
+      submittingVisitRef.current = false;
     }
-
-    setSaving(false);
-    setToast(`Saved: ${selected.name}`);
-    setSelected(null);
-    router.refresh();
-    setTimeout(() => setToast(""), 2500);
   };
 
   const submitNewCustomer = async (e) => {
     e.preventDefault();
+    if (submittingCustomerRef.current) return;
+    submittingCustomerRef.current = true;
     setSaving(true);
-    const { error } = await supabase.from("customers").insert({
-      name: newCust.name, region: newCust.region, area: newCust.area,
-      customer_type: newCust.customer_type, rep_id: profile.id,
-      monthly_target: Number(newCust.monthly_target) || 0,
-      credit_limit: Number(newCust.credit_limit) || 0,
-    });
-    setSaving(false);
-    if (error) { setToast("Could not add customer."); return; }
-    setToast(`Added: ${newCust.name}`);
-    setShowNewCustomer(false);
-    setNewCust({ name: "", region: "", area: "", customer_type: "Mini Mart", monthly_target: "", credit_limit: "" });
-    router.refresh();
-    setTimeout(() => setToast(""), 2500);
+    try {
+      const { error } = await supabase.from("customers").insert({
+        name: newCust.name, region: newCust.region, area: newCust.area,
+        customer_type: newCust.customer_type, rep_id: profile.id,
+        monthly_target: Number(newCust.monthly_target) || 0,
+        credit_limit: Number(newCust.credit_limit) || 0,
+      });
+      if (error) { setToast("Could not add customer."); return; }
+      setToast(`Added: ${newCust.name}`);
+      setShowNewCustomer(false);
+      setNewCust({ name: "", region: "", area: "", customer_type: "Mini Mart", monthly_target: "", credit_limit: "" });
+      router.refresh();
+      setTimeout(() => setToast(""), 2500);
+    } finally {
+      setSaving(false);
+      submittingCustomerRef.current = false;
+    }
   };
 
   const signOut = async () => { await supabase.auth.signOut(); router.push("/login"); router.refresh(); };
@@ -187,6 +209,8 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
 
   const parseInvoice = async () => {
     if (!invoiceFile) return;
+    if (parsingInvoiceRef.current) return;
+    parsingInvoiceRef.current = true;
     setInvoiceParsing(true);
     setInvoiceError("");
     try {
@@ -201,7 +225,6 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
             ? "The invoice-reading service took too long or crashed before responding — this usually means a server timeout, not a bad photo. Try again in a moment, or enter it manually."
             : "Could not read that invoice. Try a clearer photo, or enter it manually.")
         );
-        setInvoiceParsing(false);
         return;
       }
       const { parsed, match, warnings, invoice_image_path } = body;
@@ -221,8 +244,10 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
       });
     } catch {
       setInvoiceError("Could not reach the server. Check your connection and try again.");
+    } finally {
+      setInvoiceParsing(false);
+      parsingInvoiceRef.current = false;
     }
-    setInvoiceParsing(false);
   };
 
   const updateInvoiceItem = (key, patch) => {
@@ -239,55 +264,72 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
   const submitInvoice = async (e) => {
     e.preventDefault();
     if (!invoiceReview?.customerId) { setInvoiceError("Select which customer this invoice belongs to before saving."); return; }
+    if (submittingInvoiceRef.current) return;
+    submittingInvoiceRef.current = true;
     setSaving(true);
-    const gp = Math.round(invoiceComputedTotal * DEFAULT_GP_MARGIN);
+    try {
+      const gp = Math.round(invoiceComputedTotal * DEFAULT_GP_MARGIN);
 
-    const { data: entryRows, error: entryErr } = await supabase.from("sales_entries").insert({
-      customer_id: invoiceReview.customerId,
-      rep_id: profile.id,
-      entry_date: invoiceReview.date,
-      sale_amount: invoiceComputedTotal,
-      gp,
-      outstanding_collected: invoiceReview.paymentStatus === "paid" ? invoiceComputedTotal : 0,
-      visit_notes: "Logged from scanned invoice",
-      invoice_number: invoiceReview.invoiceNumber || null,
-      payment_status: invoiceReview.paymentStatus,
-      invoice_image_path: invoiceReview.invoiceImagePath,
-    }).select("id").single();
+      const { data: entryRows, error: entryErr } = await supabase.from("sales_entries").insert({
+        customer_id: invoiceReview.customerId,
+        rep_id: profile.id,
+        entry_date: invoiceReview.date,
+        sale_amount: invoiceComputedTotal,
+        gp,
+        outstanding_collected: invoiceReview.paymentStatus === "paid" ? invoiceComputedTotal : 0,
+        visit_notes: "Logged from scanned invoice",
+        invoice_number: invoiceReview.invoiceNumber || null,
+        payment_status: invoiceReview.paymentStatus,
+        invoice_image_path: invoiceReview.invoiceImagePath,
+      }).select("id").single();
 
-    if (entryErr) { setSaving(false); setInvoiceError("Could not save this invoice — " + entryErr.message); return; }
+      if (entryErr) {
+        // 23505 = unique_violation — this exact invoice number was already
+        // logged for this customer. The database is the source of truth
+        // here, not just a UI double-click guard, so this catches repeat
+        // submissions from a different session/device too.
+        if (entryErr.code === "23505") {
+          setInvoiceError(`Invoice ${invoiceReview.invoiceNumber || ""} was already logged for this customer — this looks like a duplicate, so it wasn't saved again. Check Customer Performance if you need to review the original entry.`);
+        } else {
+          setInvoiceError("Could not save this invoice — " + entryErr.message);
+        }
+        return;
+      }
 
-    const lineItems = invoiceReview.items
-      .filter((it) => Number(it.quantity) > 0)
-      .map((it) => ({
-        sales_entry_id: entryRows.id,
-        sku_id: it.skuId || null,
-        sku_code_raw: it.descriptionRaw,
-        quantity: Number(it.quantity) || 0,
-        unit_price: Number(it.unitPrice) || 0,
-        line_total: Math.round(Number(it.quantity || 0) * Number(it.unitPrice || 0) * 100) / 100,
-      }));
-    if (lineItems.length) {
-      const { error: itemsErr } = await supabase.from("sale_line_items").insert(lineItems);
-      if (itemsErr) { setSaving(false); setInvoiceError("Invoice saved, but line items didn't save: " + itemsErr.message); return; }
+      const lineItems = invoiceReview.items
+        .filter((it) => Number(it.quantity) > 0)
+        .map((it) => ({
+          sales_entry_id: entryRows.id,
+          sku_id: it.skuId || null,
+          sku_code_raw: it.descriptionRaw,
+          quantity: Number(it.quantity) || 0,
+          unit_price: Number(it.unitPrice) || 0,
+          line_total: Math.round(Number(it.quantity || 0) * Number(it.unitPrice || 0) * 100) / 100,
+        }));
+      if (lineItems.length) {
+        const { error: itemsErr } = await supabase.from("sale_line_items").insert(lineItems);
+        if (itemsErr) { setInvoiceError("Invoice saved, but line items didn't save: " + itemsErr.message); return; }
+      }
+
+      // Items the AI matched to a real SKU are now known to be on this
+      // customer's shelf — reflect that in their stock checklist.
+      const matchedSkuIds = [...new Set(invoiceReview.items.filter((it) => it.skuId).map((it) => it.skuId))];
+      if (matchedSkuIds.length) {
+        const stockRows = matchedSkuIds.map((skuId) => ({
+          customer_id: invoiceReview.customerId, sku_id: skuId, in_stock: true,
+          updated_by: profile.id, updated_at: new Date().toISOString(),
+        }));
+        await supabase.from("customer_sku_stock").upsert(stockRows, { onConflict: "customer_id,sku_id" });
+      }
+
+      setToast("Invoice saved");
+      closeInvoiceUpload();
+      router.refresh();
+      setTimeout(() => setToast(""), 2500);
+    } finally {
+      setSaving(false);
+      submittingInvoiceRef.current = false;
     }
-
-    // Items the AI matched to a real SKU are now known to be on this
-    // customer's shelf — reflect that in their stock checklist.
-    const matchedSkuIds = [...new Set(invoiceReview.items.filter((it) => it.skuId).map((it) => it.skuId))];
-    if (matchedSkuIds.length) {
-      const stockRows = matchedSkuIds.map((skuId) => ({
-        customer_id: invoiceReview.customerId, sku_id: skuId, in_stock: true,
-        updated_by: profile.id, updated_at: new Date().toISOString(),
-      }));
-      await supabase.from("customer_sku_stock").upsert(stockRows, { onConflict: "customer_id,sku_id" });
-    }
-
-    setSaving(false);
-    setToast("Invoice saved");
-    closeInvoiceUpload();
-    router.refresh();
-    setTimeout(() => setToast(""), 2500);
   };
 
   return (
