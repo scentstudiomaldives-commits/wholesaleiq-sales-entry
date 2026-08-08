@@ -522,7 +522,7 @@ export default function EntryClient({ profile, customers, todaysEntries, atolls,
             {!invoiceReview && (
               <>
                 <input
-                  ref={invoiceFileInputRef} type="file" accept="image/png,image/jpeg,image/webp" capture="environment"
+                  ref={invoiceFileInputRef} type="file" accept="image/png,image/jpeg,image/webp"
                   style={{ display: "none" }}
                   onChange={(e) => handleInvoiceFileChosen(e.target.files?.[0] || null)}
                 />
