@@ -1,5 +1,6 @@
 import { createClient } from "../../lib/supabaseServer";
 import { redirect } from "next/navigation";
+import { Suspense } from "react";
 import AdminDashboardClient from "./AdminDashboardClient";
 
 export default async function AdminPage() {
@@ -33,12 +34,14 @@ export default async function AdminPage() {
   }));
 
   return (
-    <AdminDashboardClient
-      profile={profile}
-      liveCustomerRows={liveCustomerRows}
-      liveTrendRows={monthlyTrend && monthlyTrend.length ? monthlyTrend : null}
-      initialSkuRows={skuRows && skuRows.length ? skuRows : null}
-      initialStockRows={stockRows && stockRows.length ? stockRows : null}
-    />
+    <Suspense fallback={<div style={{ minHeight: "100vh", background: "#F4F7FB" }} />}>
+      <AdminDashboardClient
+        profile={profile}
+        liveCustomerRows={liveCustomerRows}
+        liveTrendRows={monthlyTrend && monthlyTrend.length ? monthlyTrend : null}
+        initialSkuRows={skuRows && skuRows.length ? skuRows : null}
+        initialStockRows={stockRows && stockRows.length ? stockRows : null}
+      />
+    </Suspense>
   );
 }
