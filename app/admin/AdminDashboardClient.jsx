@@ -148,7 +148,110 @@ function generateDemoStockRows() {
    dashboard data model out. Runs identically for demo or
    uploaded data.
 ------------------------------------------------------------------*/
-function buildModel(customerRows, skuRows, stockRows, trendRows) {
+/* ---------------------------------------------------------------
+   CURRENT PERIOD — computed entirely client-side so switching
+   periods is instant (no re-fetch). Growth % always compares
+   against an immediately-preceding window of the same length.
+------------------------------------------------------------------*/
+const PERIOD_OPTIONS = [
+  { key: "this_month", label: "This Month" },
+  { key: "last_month", label: "Last Month" },
+  { key: "last_3_months", label: "Last 3 Months" },
+  { key: "last_6_months", label: "Last 6 Months" },
+  { key: "ytd", label: "Year to Date" },
+  { key: "all_time", label: "All Time" },
+];
+
+function computePeriodWindow(presetKey) {
+  const now = new Date();
+  const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  const y = now.getFullYear(), m = now.getMonth();
+  const startOfMonth = (yy, mm) => new Date(yy, mm, 1);
+  const endOfMonth = (yy, mm) => new Date(yy, mm + 1, 0, 23, 59, 59, 999);
+
+  switch (presetKey) {
+    case "last_month":
+      return { key: presetKey, start: startOfMonth(y, m - 1), end: endOfMonth(y, m - 1), monthsSpan: 1, priorStart: startOfMonth(y, m - 2), priorEnd: endOfMonth(y, m - 2) };
+    case "last_3_months":
+      return { key: presetKey, start: startOfMonth(y, m - 2), end: endOfToday, monthsSpan: 3, priorStart: startOfMonth(y, m - 5), priorEnd: endOfMonth(y, m - 3) };
+    case "last_6_months":
+      return { key: presetKey, start: startOfMonth(y, m - 5), end: endOfToday, monthsSpan: 6, priorStart: startOfMonth(y, m - 11), priorEnd: endOfMonth(y, m - 6) };
+    case "ytd":
+      // Compared against the same Jan 1–today range, one year earlier —
+      // the standard YTD-vs-YTD comparison, not an arbitrary trailing window.
+      return { key: presetKey, start: startOfMonth(y, 0), end: endOfToday, monthsSpan: m + 1, priorStart: new Date(y - 1, 0, 1), priorEnd: new Date(y - 1, m, now.getDate(), 23, 59, 59, 999) };
+    case "all_time":
+      // No meaningful "prior" window to compare against.
+      return { key: presetKey, start: new Date(2000, 0, 1), end: endOfToday, monthsSpan: null, priorStart: new Date(1990, 0, 1), priorEnd: new Date(1990, 0, 2) };
+    case "this_month":
+    default:
+      return { key: presetKey, start: startOfMonth(y, m), end: endOfToday, monthsSpan: 1, priorStart: startOfMonth(y, m - 1), priorEnd: endOfMonth(y, m - 1) };
+  }
+}
+
+// Rebuilds the same flat "customer row" shape the old SQL view used to
+// produce (region, area, customer_name, monthly_sales, growth_pct, ...)
+// so buildModel() itself never needed to change — only where these rows
+// come from changed, from a fixed-period SQL view to a period-aware JS
+// computation over raw sales_entries.
+function buildCustomerSnapshotRows(customers, salesEntries, buyingRows, periodWindow) {
+  const { start, end, monthsSpan, priorStart, priorEnd } = periodWindow;
+  const now = new Date();
+  const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const byCustomer = new Map();
+  salesEntries.forEach((se) => {
+    if (!byCustomer.has(se.customer_id)) byCustomer.set(se.customer_id, []);
+    byCustomer.get(se.customer_id).push(se);
+  });
+  const buyingByCode = new Map((buyingRows || []).map((r) => [r.customer_code, r]));
+
+  return customers.map((c) => {
+    const entries = byCustomer.get(c.id) || [];
+    const inWindow = (e, s, en) => { const d = new Date(e.entry_date); return d >= s && d <= en; };
+    const inPeriod = entries.filter((e) => inWindow(e, start, end));
+    const inPrior = entries.filter((e) => inWindow(e, priorStart, priorEnd));
+    const thisMonth = entries.filter((e) => new Date(e.entry_date) >= thisMonthStart);
+
+    const periodSales = inPeriod.reduce((s, e) => s + Number(e.sale_amount || 0), 0);
+    const periodGp = inPeriod.reduce((s, e) => s + Number(e.gp || 0), 0);
+    const priorSales = inPrior.reduce((s, e) => s + Number(e.sale_amount || 0), 0);
+    const thisMonthSales = thisMonth.reduce((s, e) => s + Number(e.sale_amount || 0), 0);
+
+    // Visit recency, portfolio %, and next-visit date reflect the
+    // customer's actual latest activity regardless of which period is
+    // selected — "how overdue is this visit" shouldn't change just
+    // because you're looking at last quarter's sales.
+    const latest = entries.length ? entries.reduce((a, b) => (new Date(a.entry_date) > new Date(b.entry_date) ? a : b)) : null;
+    const lastVisitDays = latest ? Math.floor((now - new Date(latest.entry_date)) / 86400000) : 999;
+
+    const target = monthsSpan ? (Number(c.monthly_target) || 0) * monthsSpan : (Number(c.monthly_target) || 0);
+    const buying = buyingByCode.get(c.customer_code);
+
+    return {
+      region: c.region, area: c.area,
+      customer_name: c.name, customer_code: c.customer_code,
+      rep: c.profiles?.full_name || "Unassigned",
+      customer_type: c.customer_type, status: c.status,
+      is_new: c.created_at && (now - new Date(c.created_at)) < 30 * 86400000 ? "yes" : "no",
+      monthly_sales: periodSales, target, gp: periodGp,
+      portfolio_pct: latest?.portfolio_pct ?? 70,
+      last_visit_days: lastVisitDays,
+      next_visit_days: latest?.next_visit_date ? Math.round((new Date(latest.next_visit_date) - now) / 86400000) : 7,
+      credit_limit: c.credit_limit,
+      // Outstanding balance is always based on the current month specifically
+      // (a collections question), independent of whatever period is being
+      // browsed for sales analysis.
+      outstanding: Math.max((Number(c.credit_limit) || 0) - thisMonthSales, 0),
+      days_since_purchase: lastVisitDays,
+      growth_pct: priorSales > 0 ? Math.round(((periodSales - priorSales) / priorSales) * 1000) / 10 : 0,
+      is_buying: buying?.is_buying ?? false,
+      last_purchase_date: buying?.last_purchase_date ?? null,
+    };
+  });
+}
+
+function buildModel(customerRows, skuRows, stockRows, trendRows, periodLabel) {
   const activeRows = customerRows.filter((r) => String(r.status || "active").toLowerCase() !== "lost");
   const lostRows = customerRows.filter((r) => String(r.status || "active").toLowerCase() === "lost");
 
@@ -365,7 +468,7 @@ function buildModel(customerRows, skuRows, stockRows, trendRows) {
   return {
     REGIONS, ALL_CUSTOMERS, LOST_CUSTOMERS, TOTAL_SALES, TOTAL_TARGET, TOTAL_CUSTOMERS, ACTIVE_CUSTOMERS, TOTAL_GP, AVG_PORTFOLIO,
     REP_PERF, SKUS, LOST_OPPS, BRAND_DIST, CATEGORY_SALES, ABC_ANALYSIS, WAREHOUSE_STOCK, TREND, STOCK_TREND,
-    trendEstimated, stockTrendEstimated, lostCustomersTotal: lostRows.length,
+    trendEstimated, stockTrendEstimated, lostCustomersTotal: lostRows.length, periodLabel,
   };
 }
 
@@ -612,7 +715,7 @@ function UploadPanel({ open, onClose, meta, errors, onFile, onReset }) {
    MAIN APP — receives live customer + trend data from the server
    component (app/admin/page.jsx), which queries Supabase.
 ------------------------------------------------------------------*/
-export default function App({ profile, liveCustomerRows, liveTrendRows, initialSkuRows, initialStockRows }) {
+export default function App({ profile, rawCustomers, rawSalesEntries, buyingStatusRows, liveTrendRows, initialSkuRows, initialStockRows }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -631,6 +734,8 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
   const [uploadOpen, setUploadOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [regionPickerOpen, setRegionPickerOpen] = useState(false);
+  const [periodPickerOpen, setPeriodPickerOpen] = useState(false);
+  const [periodKey, setPeriodKey] = useState(() => searchParams.get("period") || "this_month");
   const [statusFilter, setStatusFilter] = useState("active"); // "active" | "all"
   const [searchFocused, setSearchFocused] = useState(false);
 
@@ -642,10 +747,11 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
     if (selectedRegion) params.set("region", selectedRegion);
     if (selectedArea) params.set("area", selectedArea);
     if (selectedCustomer) params.set("customer", selectedCustomer);
+    if (periodKey !== "this_month") params.set("period", periodKey);
     const qs = params.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, selectedRegion, selectedArea, selectedCustomer]);
+  }, [page, selectedRegion, selectedArea, selectedCustomer, periodKey]);
 
   const [skuRows, setSkuRows] = useState(initialSkuRows);
   const [stockRows, setStockRows] = useState(initialStockRows);
@@ -656,12 +762,21 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
   const [errors, setErrors] = useState({ skus: null, stock: null });
   const [saving, setSaving] = useState({ skus: false, stock: false });
 
+  // Recomputed entirely client-side whenever the period changes — the raw
+  // customers + sales_entries were already fetched once, so switching
+  // periods is instant with no network round-trip.
+  const periodWindow = useMemo(() => computePeriodWindow(periodKey), [periodKey]);
+  const liveCustomerRows = useMemo(
+    () => buildCustomerSnapshotRows(rawCustomers, rawSalesEntries, buyingStatusRows, periodWindow),
+    [rawCustomers, rawSalesEntries, buyingStatusRows, periodWindow]
+  );
+
   const demoSkuRows = useMemo(() => generateDemoSkuRows(liveCustomerRows.filter((r) => r.status !== "lost").length || 40), [liveCustomerRows]);
   const demoStockRows = useMemo(() => generateDemoStockRows(), []);
 
   const model = useMemo(
-    () => buildModel(liveCustomerRows, skuRows || demoSkuRows, stockRows || demoStockRows, liveTrendRows),
-    [liveCustomerRows, skuRows, stockRows, liveTrendRows, demoSkuRows, demoStockRows]
+    () => buildModel(liveCustomerRows, skuRows || demoSkuRows, stockRows || demoStockRows, liveTrendRows, PERIOD_OPTIONS.find((p) => p.key === periodKey)?.label || "This Month"),
+    [liveCustomerRows, skuRows, stockRows, liveTrendRows, demoSkuRows, demoStockRows, periodKey]
   );
 
   const isLive = true; // customer data is always live from Supabase
@@ -840,9 +955,29 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
             <div style={{ flex: 1 }} />
             {!isMobile && (
               <>
-                <div title="Date-range filtering isn't built yet — every page currently shows the current month only." style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.bg, border: `1px solid ${COLORS.line}`, borderRadius: 9, padding: "6px 10px", opacity: 0.6, cursor: "default" }}>
-                  <Calendar size={12.5} color={COLORS.textMuted} />
-                  <span style={{ fontSize: 12, fontFamily: "Inter, sans-serif", fontWeight: 600, color: COLORS.textMuted }}>Current Period</span>
+                <div style={{ position: "relative" }}>
+                  <div
+                    onClick={() => setPeriodPickerOpen((v) => !v)}
+                    style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.bg, border: `1px solid ${COLORS.line}`, borderRadius: 9, padding: "6px 10px", cursor: "pointer" }}
+                  >
+                    <Calendar size={12.5} color={COLORS.textSecondary} />
+                    <span style={{ fontSize: 12, fontFamily: "Inter, sans-serif", fontWeight: 600, color: COLORS.textPrimary }}>{PERIOD_OPTIONS.find((p) => p.key === periodKey)?.label}</span>
+                  </div>
+                  {periodPickerOpen && (
+                    <>
+                      <div onClick={() => setPeriodPickerOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 20 }} />
+                      <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, boxShadow: "0 12px 28px rgba(11,32,54,0.16)", zIndex: 21, minWidth: 170, padding: 6 }}>
+                        {PERIOD_OPTIONS.map((p) => (
+                          <div
+                            key={p.key} className="rowclick" onClick={() => { setPeriodKey(p.key); setPeriodPickerOpen(false); }}
+                            style={{ padding: "8px 10px", borderRadius: 7, fontSize: 12.5, fontWeight: p.key === periodKey ? 700 : 500, color: p.key === periodKey ? COLORS.blue : COLORS.textPrimary, cursor: "pointer", background: p.key === periodKey ? COLORS.blueSoft : "transparent" }}
+                          >
+                            {p.label}
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 <div style={{ position: "relative" }}>
@@ -1015,7 +1150,7 @@ function SlicerChip({ icon: Icon, label, onClear }) {
 ------------------------------------------------------------------*/
 function ExecutivePage({ alerts, goRegion, drillCustomer }) {
   const isMobile = useIsMobile();
-  const { REGIONS, TOTAL_SALES, TOTAL_TARGET, TOTAL_GP, TOTAL_CUSTOMERS, ACTIVE_CUSTOMERS, AVG_PORTFOLIO, TREND, BRAND_DIST, SKUS, CATEGORY_SALES, ALL_CUSTOMERS, trendEstimated } = useContext(DataContext);
+  const { REGIONS, TOTAL_SALES, TOTAL_TARGET, TOTAL_GP, TOTAL_CUSTOMERS, ACTIVE_CUSTOMERS, AVG_PORTFOLIO, TREND, BRAND_DIST, SKUS, CATEGORY_SALES, ALL_CUSTOMERS, trendEstimated, periodLabel } = useContext(DataContext);
   const achievement = TOTAL_TARGET ? Math.round((TOTAL_SALES / TOTAL_TARGET) * 100) : 0;
   const gpPct = TOTAL_SALES ? Math.round((TOTAL_GP / TOTAL_SALES) * 1000) / 10 : 0;
   const outOfStockAlerts = SKUS.filter((s) => s.outOfStock > TOTAL_CUSTOMERS * 0.15).length;
@@ -1025,7 +1160,7 @@ function ExecutivePage({ alerts, goRegion, drillCustomer }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(6, 1fr)", gap: 14 }}>
-        <KpiCard label="Total Sales (MTD)" value={fmtShort(TOTAL_SALES)} sub="current snapshot" icon={LayoutDashboard} />
+        <KpiCard label={`Total Sales (${periodLabel})`} value={fmtShort(TOTAL_SALES)} sub="vs same-length prior period" icon={LayoutDashboard} />
         <KpiCard label="Sales Target" value={fmtShort(TOTAL_TARGET)} tone="neutral" />
         <KpiCard label="Target Achievement" value={pct(achievement)} tone={achievement >= 95 ? "good" : achievement >= 85 ? "warn" : "bad"} icon={CheckCircle2} />
         <KpiCard label="Gross Profit" value={fmtShort(TOTAL_GP)} tone="good" />
