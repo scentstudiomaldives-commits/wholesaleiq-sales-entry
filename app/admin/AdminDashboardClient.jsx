@@ -176,6 +176,7 @@ function buildModel(customerRows, skuRows, stockRows, trendRows) {
       isNew: toBool(r.is_new),
       isBuying: toBool(r.is_buying),
       lastPurchaseDate: r.last_purchase_date || null,
+      status: r.status || "active",
     };
   };
 
@@ -230,6 +231,12 @@ function buildModel(customerRows, skuRows, stockRows, trendRows) {
   const ALL_CUSTOMERS = REGIONS.flatMap((r) => r.areas.flatMap((a) => a.customers))
     .sort((a, b) => b.monthlySales - a.monthlySales)
     .map((c, i) => ({ ...c, ranking: i + 1 }));
+
+  // Lost customers aren't part of any region's rollups (sales/targets/etc.
+  // stay based on active customers only, unaffected by this) — this list
+  // exists purely so the Customer Performance page can optionally show
+  // them via the "Status: Active / All" toggle.
+  const LOST_CUSTOMERS = lostRows.map((r, i) => mkCustomer(r, i));
 
   const TOTAL_SALES = REGIONS.reduce((s, r) => s + r.sales, 0);
   const TOTAL_TARGET = REGIONS.reduce((s, r) => s + r.target, 0);
@@ -356,7 +363,7 @@ function buildModel(customerRows, skuRows, stockRows, trendRows) {
   }));
 
   return {
-    REGIONS, ALL_CUSTOMERS, TOTAL_SALES, TOTAL_TARGET, TOTAL_CUSTOMERS, ACTIVE_CUSTOMERS, TOTAL_GP, AVG_PORTFOLIO,
+    REGIONS, ALL_CUSTOMERS, LOST_CUSTOMERS, TOTAL_SALES, TOTAL_TARGET, TOTAL_CUSTOMERS, ACTIVE_CUSTOMERS, TOTAL_GP, AVG_PORTFOLIO,
     REP_PERF, SKUS, LOST_OPPS, BRAND_DIST, CATEGORY_SALES, ABC_ANALYSIS, WAREHOUSE_STOCK, TREND, STOCK_TREND,
     trendEstimated, stockTrendEstimated, lostCustomersTotal: lostRows.length,
   };
@@ -622,6 +629,10 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
   const [selectedCustomer, setSelectedCustomer] = useState(() => searchParams.get("customer") || null);
   const [custSearch, setCustSearch] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [regionPickerOpen, setRegionPickerOpen] = useState(false);
+  const [statusFilter, setStatusFilter] = useState("active"); // "active" | "all"
+  const [searchFocused, setSearchFocused] = useState(false);
 
   // Keep the URL in sync whenever the drill-down position changes, so
   // Back/Forward and refresh behave predictably instead of losing position.
@@ -735,6 +746,17 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
     return list;
   }, [model.ALL_CUSTOMERS]);
 
+  // Global search — matches across customers, SKUs, and reps as you type.
+  // Capped per category so the dropdown stays short and scannable.
+  const searchResults = useMemo(() => {
+    const q = custSearch.trim().toLowerCase();
+    if (q.length < 2) return null;
+    const customers = model.ALL_CUSTOMERS.filter((c) => c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q)).slice(0, 5);
+    const skus = model.SKUS.filter((s) => s.sku.toLowerCase().includes(q) || s.brand.toLowerCase().includes(q)).slice(0, 5);
+    const reps = model.REP_PERF.filter((r) => r.rep.toLowerCase().includes(q)).slice(0, 5);
+    return { customers, skus, reps, empty: !customers.length && !skus.length && !reps.length };
+  }, [custSearch, model.ALL_CUSTOMERS, model.SKUS, model.REP_PERF]);
+
   return (
     <DataContext.Provider value={model}>
       <div style={{ display: "flex", minHeight: "100vh", background: COLORS.bg, fontFamily: "Inter, sans-serif" }}>
@@ -818,15 +840,103 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
             <div style={{ flex: 1 }} />
             {!isMobile && (
               <>
-                <SlicerChip icon={Calendar} label="Current Period" />
-                <SlicerChip icon={MapIcon} label={region ? region.name : "All Regions"} onClear={region ? () => { setSelectedRegion(null); setSelectedArea(null); } : null} />
+                <div title="Date-range filtering isn't built yet — every page currently shows the current month only." style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.bg, border: `1px solid ${COLORS.line}`, borderRadius: 9, padding: "6px 10px", opacity: 0.6, cursor: "default" }}>
+                  <Calendar size={12.5} color={COLORS.textMuted} />
+                  <span style={{ fontSize: 12, fontFamily: "Inter, sans-serif", fontWeight: 600, color: COLORS.textMuted }}>Current Period</span>
+                </div>
+
+                <div style={{ position: "relative" }}>
+                  <div
+                    onClick={() => setRegionPickerOpen((v) => !v)}
+                    style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.bg, border: `1px solid ${COLORS.line}`, borderRadius: 9, padding: "6px 10px", cursor: "pointer" }}
+                  >
+                    <MapIcon size={12.5} color={COLORS.textSecondary} />
+                    <span style={{ fontSize: 12, fontFamily: "Inter, sans-serif", fontWeight: 600, color: COLORS.textPrimary }}>{region ? region.name : "All Regions"}</span>
+                    {region && <XCircle size={13} color={COLORS.textMuted} style={{ cursor: "pointer" }} onClick={(e) => { e.stopPropagation(); setSelectedRegion(null); setSelectedArea(null); }} />}
+                  </div>
+                  {regionPickerOpen && (
+                    <>
+                      <div onClick={() => setRegionPickerOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 20 }} />
+                      <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, boxShadow: "0 12px 28px rgba(11,32,54,0.16)", zIndex: 21, minWidth: 200, maxHeight: 320, overflowY: "auto", padding: 6 }}>
+                        <div
+                          className="rowclick" onClick={() => { setSelectedRegion(null); setSelectedArea(null); setRegionPickerOpen(false); }}
+                          style={{ padding: "8px 10px", borderRadius: 7, fontSize: 12.5, fontWeight: 700, color: COLORS.textPrimary, cursor: "pointer" }}
+                        >
+                          All Regions
+                        </div>
+                        {model.REGIONS.map((r) => (
+                          <div
+                            key={r.id} className="rowclick" onClick={() => { goRegion(r.id); setRegionPickerOpen(false); }}
+                            style={{ padding: "8px 10px", borderRadius: 7, fontSize: 12.5, fontWeight: 600, color: COLORS.textPrimary, cursor: "pointer", display: "flex", justifyContent: "space-between" }}
+                          >
+                            <span>{r.name}</span>
+                            <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>{r.customers}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+
                 {area && <SlicerChip icon={Building2} label={area.name} onClear={() => setSelectedArea(null)} />}
-                <SlicerChip icon={Filter} label="Status: Active" />
+
+                <div
+                  onClick={() => setStatusFilter((v) => (v === "active" ? "all" : "active"))}
+                  title="Toggle whether lost customers are included in the Customer Performance list"
+                  style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.bg, border: `1px solid ${COLORS.line}`, borderRadius: 9, padding: "6px 10px", cursor: "pointer" }}
+                >
+                  <Filter size={12.5} color={COLORS.textSecondary} />
+                  <span style={{ fontSize: 12, fontFamily: "Inter, sans-serif", fontWeight: 600, color: COLORS.textPrimary }}>Status: {statusFilter === "active" ? "Active" : "All"}</span>
+                </div>
               </>
             )}
             <div style={{ position: "relative" }}>
               <Search size={13} style={{ position: "absolute", left: 10, top: 9, color: COLORS.textMuted }} />
-              <input placeholder={isMobile ? "Search…" : "Search customer, SKU, rep…"} value={custSearch} onChange={(e) => setCustSearch(e.target.value)} style={{ padding: "7px 10px 7px 28px", borderRadius: 9, border: `1px solid ${COLORS.line}`, fontSize: 12.5, fontFamily: "Inter, sans-serif", width: isMobile ? 110 : 200, outline: "none" }} />
+              <input
+                placeholder={isMobile ? "Search…" : "Search customer, SKU, rep…"} value={custSearch}
+                onChange={(e) => setCustSearch(e.target.value)}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
+                style={{ padding: "7px 10px 7px 28px", borderRadius: 9, border: `1px solid ${COLORS.line}`, fontSize: 12.5, fontFamily: "Inter, sans-serif", width: isMobile ? 110 : 200, outline: "none" }}
+              />
+              {searchFocused && searchResults && (
+                <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, boxShadow: "0 12px 28px rgba(11,32,54,0.16)", zIndex: 21, width: 280, maxHeight: 360, overflowY: "auto", padding: 8 }}>
+                  {searchResults.empty && <div style={{ padding: "10px 8px", fontSize: 12, color: COLORS.textMuted }}>No matches.</div>}
+                  {searchResults.customers.length > 0 && (
+                    <div style={{ marginBottom: 6 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: COLORS.textMuted, padding: "4px 8px", textTransform: "uppercase" }}>Customers</div>
+                      {searchResults.customers.map((c) => (
+                        <div key={c.id} className="rowclick" onClick={() => { drillCustomer(c.id); setCustSearch(""); }} style={{ padding: "7px 8px", borderRadius: 7, cursor: "pointer" }}>
+                          <div style={{ fontSize: 12.5, fontWeight: 600, color: COLORS.textPrimary }}>{c.name}</div>
+                          <div style={{ fontSize: 10.5, color: COLORS.textMuted }}>{c.code} · {c.area}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {searchResults.skus.length > 0 && (
+                    <div style={{ marginBottom: 6 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: COLORS.textMuted, padding: "4px 8px", textTransform: "uppercase" }}>Products</div>
+                      {searchResults.skus.map((s, i) => (
+                        <div key={i} className="rowclick" onClick={() => { setPage("product"); setCustSearch(""); }} style={{ padding: "7px 8px", borderRadius: 7, cursor: "pointer" }}>
+                          <div style={{ fontSize: 12.5, fontWeight: 600, color: COLORS.textPrimary }}>{s.sku}</div>
+                          <div style={{ fontSize: 10.5, color: COLORS.textMuted }}>{s.brand}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {searchResults.reps.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: COLORS.textMuted, padding: "4px 8px", textTransform: "uppercase" }}>Sales Reps</div>
+                      {searchResults.reps.map((r, i) => (
+                        <div key={i} className="rowclick" onClick={() => { setPage("reps"); setCustSearch(""); }} style={{ padding: "7px 8px", borderRadius: 7, cursor: "pointer" }}>
+                          <div style={{ fontSize: 12.5, fontWeight: 600, color: COLORS.textPrimary }}>{r.rep}</div>
+                          <div style={{ fontSize: 10.5, color: COLORS.textMuted }}>{r.region} · {r.customers} customers</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <div
               onClick={() => setUploadOpen(true)}
@@ -836,9 +946,38 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
               <Database size={13} color={COLORS.green} />
               <span style={{ fontSize: 11.5, fontWeight: 700, color: COLORS.green }}>Live</span>
             </div>
-            <div style={{ width: 32, height: 32, borderRadius: 9, background: COLORS.blueSoft, display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
-              <Bell size={15} color={COLORS.blue} />
-              <div style={{ position: "absolute", top: -3, right: -3, width: 14, height: 14, borderRadius: 7, background: COLORS.red, color: "#fff", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{Math.min(9, alerts.length)}</div>
+            <div style={{ position: "relative" }}>
+              <div
+                onClick={() => setNotifOpen((v) => !v)}
+                style={{ width: 32, height: 32, borderRadius: 9, background: COLORS.blueSoft, display: "flex", alignItems: "center", justifyContent: "center", position: "relative", cursor: "pointer" }}
+              >
+                <Bell size={15} color={COLORS.blue} />
+                {alerts.length > 0 && (
+                  <div style={{ position: "absolute", top: -3, right: -3, width: 14, height: 14, borderRadius: 7, background: COLORS.red, color: "#fff", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{Math.min(9, alerts.length)}</div>
+                )}
+              </div>
+              {notifOpen && (
+                <>
+                  <div onClick={() => setNotifOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 20 }} />
+                  <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, boxShadow: "0 12px 28px rgba(11,32,54,0.16)", zIndex: 21, width: 320, maxHeight: 400, overflowY: "auto", padding: 10 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 800, color: COLORS.textPrimary, padding: "4px 6px 8px", fontFamily: "Manrope" }}>Alerts ({alerts.length})</div>
+                    {!alerts.length && <div style={{ padding: "8px 6px", fontSize: 12, color: COLORS.textMuted }}>No alerts right now.</div>}
+                    {alerts.slice(0, 15).map((a, i) => (
+                      <div
+                        key={i} className="rowclick" onClick={() => { setPage("executive"); setNotifOpen(false); }}
+                        style={{ display: "flex", gap: 8, padding: "8px 6px", borderRadius: 8, cursor: "pointer" }}
+                      >
+                        <AlertTriangle size={13} color={a.tone === "bad" ? COLORS.red : COLORS.amber} style={{ flexShrink: 0, marginTop: 2 }} />
+                        <div>
+                          <div style={{ fontSize: 11.5, fontWeight: 700, color: COLORS.textPrimary }}>{a.type}</div>
+                          <div style={{ fontSize: 11, color: COLORS.textMuted }}>{a.detail}</div>
+                        </div>
+                      </div>
+                    ))}
+                    {alerts.length > 15 && <div style={{ fontSize: 11, color: COLORS.textMuted, padding: "6px", textAlign: "center" }}>+{alerts.length - 15} more on the Executive Dashboard</div>}
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
@@ -846,7 +985,7 @@ export default function App({ profile, liveCustomerRows, liveTrendRows, initialS
             {page === "executive" && <ExecutivePage alerts={alerts} goRegion={goRegion} drillCustomer={drillCustomer} />}
             {page === "regional" && <RegionalPage region={region} drillRegion={drillRegion} />}
             {page === "area" && <AreaPage region={region} area={area} drillArea={drillArea} drillCustomer={drillCustomer} setSelectedRegion={setSelectedRegion} clearAreaDrilldown={clearAreaDrilldown} clearIslandOnly={clearIslandOnly} />}
-            {page === "customer" && <CustomerPage customer={customer} search={custSearch} drillCustomer={drillCustomer} clearCustomerDrilldown={clearCustomerDrilldown} />}
+            {page === "customer" && <CustomerPage customer={customer} search={custSearch} drillCustomer={drillCustomer} clearCustomerDrilldown={clearCustomerDrilldown} statusFilter={statusFilter} />}
             {page === "product" && <ProductPage />}
             {page === "brand" && <BrandPage />}
             {page === "reps" && <RepsPage />}
@@ -1305,24 +1444,26 @@ function AreaPage({ region, area, drillArea, drillCustomer, setSelectedRegion, c
 /* ---------------------------------------------------------------
    CUSTOMER PAGE
 ------------------------------------------------------------------*/
-function CustomerPage({ customer, search, drillCustomer, clearCustomerDrilldown }) {
+function CustomerPage({ customer, search, drillCustomer, clearCustomerDrilldown, statusFilter = "active" }) {
   const isMobile = useIsMobile();
-  const { ALL_CUSTOMERS, TOTAL_CUSTOMERS, TREND, BRAND_DIST } = useContext(DataContext);
-  const filtered = search ? ALL_CUSTOMERS.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()) || c.code.toLowerCase().includes(search.toLowerCase())) : ALL_CUSTOMERS;
+  const { ALL_CUSTOMERS, LOST_CUSTOMERS, TOTAL_CUSTOMERS, TREND, BRAND_DIST } = useContext(DataContext);
+  const baseList = statusFilter === "all" ? [...ALL_CUSTOMERS, ...LOST_CUSTOMERS] : ALL_CUSTOMERS;
+  const filtered = search ? baseList.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()) || c.code.toLowerCase().includes(search.toLowerCase())) : baseList;
 
   if (!customer) {
     return (
-      <Card title="All Customers" subtitle={`${filtered.length} customers · click to open scorecard`}>
+      <Card title="All Customers" subtitle={`${filtered.length} customers${statusFilter === "all" ? ` (including ${LOST_CUSTOMERS.length} lost)` : ""} · click to open scorecard`}>
         <div style={{ maxHeight: 560, overflowY: "auto" }}>
           <table>
-            <thead><tr><Th>Rank</Th><Th>Customer</Th><Th>Region</Th><Th>Area</Th><Th>Rep</Th><Th align="right">Monthly Sales</Th><Th align="right">Achievement</Th><Th align="right">Portfolio</Th></tr></thead>
+            <thead><tr><Th>Rank</Th><Th>Customer</Th><Th>Region</Th><Th>Area</Th><Th>Rep</Th><Th align="right">Monthly Sales</Th><Th align="right">Achievement</Th><Th align="right">Portfolio</Th>{statusFilter === "all" && <Th>Status</Th>}</tr></thead>
             <tbody>
               {filtered.map((c) => (
-                <tr key={c.id} className="rowclick" onClick={() => drillCustomer(c.id)}>
-                  <Td>#{c.ranking}</Td><Td bold>{c.name}</Td><Td>{c.region}</Td><Td>{c.area}</Td><Td>{c.rep}</Td>
+                <tr key={c.id} className="rowclick" onClick={() => drillCustomer(c.id)} style={{ opacity: c.status === "lost" ? 0.65 : 1 }}>
+                  <Td>{c.ranking ? `#${c.ranking}` : "—"}</Td><Td bold>{c.name}</Td><Td>{c.region}</Td><Td>{c.area}</Td><Td>{c.rep}</Td>
                   <Td align="right">{fmt(c.monthlySales)}</Td>
                   <Td align="right"><Pill tone={c.achievement >= 95 ? "good" : c.achievement >= 85 ? "warn" : "bad"}>{c.achievement}%</Pill></Td>
                   <Td align="right">{c.portfolio}%</Td>
+                  {statusFilter === "all" && <Td>{c.status === "lost" ? <Pill tone="bad">Lost</Pill> : <Pill tone="good">Active</Pill>}</Td>}
                 </tr>
               ))}
               {!filtered.length && <tr><Td>No customers match.</Td></tr>}
