@@ -154,6 +154,9 @@ function generateDemoStockRows() {
    against an immediately-preceding window of the same length.
 ------------------------------------------------------------------*/
 const PERIOD_OPTIONS = [
+  { key: "today", label: "Today" },
+  { key: "this_week", label: "This Week" },
+  { key: "last_week", label: "Last Week" },
   { key: "this_month", label: "This Month" },
   { key: "last_month", label: "Last Month" },
   { key: "last_3_months", label: "Last 3 Months" },
@@ -162,14 +165,41 @@ const PERIOD_OPTIONS = [
   { key: "all_time", label: "All Time" },
 ];
 
+// Average days/month (365.25/12), used only to scale a monthly target down
+// to a fair daily/weekly figure — e.g. a week's target is roughly
+// (7 / 30.44) of the monthly target. Approximate by nature; there's no
+// exact "weekly target" without STO defining one directly.
+const AVG_DAYS_PER_MONTH = 30.4368;
+
 function computePeriodWindow(presetKey) {
   const now = new Date();
   const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+  const endOfDay = (d) => { const x = new Date(d); x.setHours(23, 59, 59, 999); return x; };
+  const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+  // Monday-start week (ISO 8601), not Sunday-start.
+  const mondayOf = (d) => {
+    const x = startOfDay(d);
+    const day = x.getDay(); // 0 = Sun ... 6 = Sat
+    const diff = day === 0 ? -6 : 1 - day;
+    return addDays(x, diff);
+  };
   const y = now.getFullYear(), m = now.getMonth();
   const startOfMonth = (yy, mm) => new Date(yy, mm, 1);
   const endOfMonth = (yy, mm) => new Date(yy, mm + 1, 0, 23, 59, 59, 999);
 
   switch (presetKey) {
+    case "today":
+      return { key: presetKey, start: startOfDay(now), end: endOfDay(now), monthsSpan: 1 / AVG_DAYS_PER_MONTH, priorStart: startOfDay(addDays(now, -1)), priorEnd: endOfDay(addDays(now, -1)) };
+    case "this_week": {
+      const monday = mondayOf(now);
+      return { key: presetKey, start: monday, end: endOfToday, monthsSpan: 7 / AVG_DAYS_PER_MONTH, priorStart: addDays(monday, -7), priorEnd: endOfDay(addDays(monday, -1)) };
+    }
+    case "last_week": {
+      const thisMonday = mondayOf(now);
+      const lastMonday = addDays(thisMonday, -7);
+      return { key: presetKey, start: lastMonday, end: endOfDay(addDays(thisMonday, -1)), monthsSpan: 7 / AVG_DAYS_PER_MONTH, priorStart: addDays(lastMonday, -7), priorEnd: endOfDay(addDays(lastMonday, -1)) };
+    }
     case "last_month":
       return { key: presetKey, start: startOfMonth(y, m - 1), end: endOfMonth(y, m - 1), monthsSpan: 1, priorStart: startOfMonth(y, m - 2), priorEnd: endOfMonth(y, m - 2) };
     case "last_3_months":
