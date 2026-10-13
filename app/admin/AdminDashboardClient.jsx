@@ -1147,7 +1147,7 @@ export default function App({ profile, rawCustomers, rawSalesEntries, buyingStat
           </div>
 
           <div style={{ padding: isMobile ? "14px 12px 40px" : "22px 26px 60px", flex: 1, minWidth: 0 }}>
-            {page === "executive" && <ExecutivePage alerts={alerts} goRegion={goRegion} drillCustomer={drillCustomer} />}
+            {page === "executive" && <ExecutivePage alerts={alerts} goRegion={goRegion} drillCustomer={drillCustomer} rawCustomers={rawCustomers} periodWindow={periodWindow} />}
             {page === "regional" && <RegionalPage region={region} drillRegion={drillRegion} />}
             {page === "area" && <AreaPage region={region} area={area} drillArea={drillArea} drillCustomer={drillCustomer} setSelectedRegion={setSelectedRegion} clearAreaDrilldown={clearAreaDrilldown} clearIslandOnly={clearIslandOnly} />}
             {page === "customer" && <CustomerPage customer={customer} customerUuid={customer ? rawCustomers.find((c) => c.customer_code === customer.code)?.id : null} periodWindow={periodWindow} periodLabel={PERIOD_OPTIONS.find((p) => p.key === periodKey)?.label || "This Month"} search={custSearch} drillCustomer={drillCustomer} clearCustomerDrilldown={clearCustomerDrilldown} statusFilter={statusFilter} />}
@@ -1178,14 +1178,189 @@ function SlicerChip({ icon: Icon, label, onClear }) {
 /* ---------------------------------------------------------------
    EXECUTIVE DASHBOARD
 ------------------------------------------------------------------*/
-function ExecutivePage({ alerts, goRegion, drillCustomer }) {
+/* Invoice line items for one brand (all customers, all dates), paged because
+   the API returns at most 1000 rows per request. Period filtering happens in
+   the callers so switching period needs no refetch. */
+function useBrandLineRows(brand) {
+  const [state, setState] = useState({ rows: null, loading: false, error: null, brand: null });
+  useEffect(() => {
+    if (!brand || brand === "all") { setState({ rows: null, loading: false, error: null, brand: null }); return; }
+    let cancelled = false;
+    setState({ rows: null, loading: true, error: null, brand });
+    (async () => {
+      const supabase = createClient();
+      const all = [];
+      for (let from = 0; from < 50000; from += 1000) {
+        const { data, error } = await supabase
+          .from("sale_line_items")
+          .select("quantity, line_total, sales_entries!inner(customer_id, entry_date), skus!inner(brand)")
+          .eq("skus.brand", brand)
+          .range(from, from + 999);
+        if (cancelled) return;
+        if (error) { setState({ rows: null, loading: false, error: error.message, brand }); return; }
+        all.push(...(data || []));
+        if (!data || data.length < 1000) break;
+      }
+      setState({ rows: all, loading: false, error: null, brand });
+    })();
+    return () => { cancelled = true; };
+  }, [brand]);
+  const current = state.brand === brand;
+  return { rows: current ? state.rows : null, loading: brand !== "all" && (!current || state.loading), error: current ? state.error : null };
+}
+
+/* Per-customer purchase value for one brand within the selected period.
+   Returns { map: Map(customer_code -> value), loading, error }. */
+function useBrandCustomerSales(brand, rawCustomers, periodWindow) {
+  const { rows, loading, error } = useBrandLineRows(brand);
+  return useMemo(() => {
+    if (!rows) return { map: null, loading, error };
+    const codeById = new Map(rawCustomers.map((c) => [c.id, c.customer_code]));
+    const map = new Map();
+    rows.forEach((r) => {
+      const d = new Date(r.sales_entries?.entry_date);
+      if (d < periodWindow.start || d > periodWindow.end) return;
+      const code = codeById.get(r.sales_entries?.customer_id);
+      if (code) map.set(code, (map.get(code) || 0) + Number(r.line_total || 0));
+    });
+    return { map, loading: false, error: null };
+  }, [rows, loading, error, rawCustomers, periodWindow]);
+}
+
+/* ---------------------------------------------------------------
+   FRESH PRODUCE — regional performance (Executive page)
+   Sales, buying customers and penetration per atoll for the
+   "Fresh Produce" brand only, from invoice line items.
+------------------------------------------------------------------*/
+const FRESH_BRAND = "Fresh Produce";
+const shortRegion = (r) => String(r || "").replace(/\s*\(.*?\)/g, "").replace(/\s+Atoll$/, "");
+
+function FreshProduceRegional({ rawCustomers, periodWindow, periodLabel }) {
+  const isMobile = useIsMobile();
+  const { rows, loading, error } = useBrandLineRows(FRESH_BRAND);
+
+  const regions = useMemo(() => {
+    const active = rawCustomers.filter((c) => String(c.status || "active").toLowerCase() !== "lost");
+    const regionOf = new Map(active.map((c) => [c.id, c.region]));
+    const byRegion = new Map();
+    active.forEach((c) => {
+      const r = byRegion.get(c.region) || { region: c.region, name: shortRegion(c.region), sales: 0, qty: 0, customers: 0, buyers: new Set() };
+      r.customers += 1;
+      byRegion.set(c.region, r);
+    });
+    (rows || []).forEach((l) => {
+      const d = new Date(l.sales_entries?.entry_date);
+      if (d < periodWindow.start || d > periodWindow.end) return;
+      const r = byRegion.get(regionOf.get(l.sales_entries?.customer_id));
+      if (!r) return;
+      r.sales += Number(l.line_total || 0);
+      r.qty += Number(l.quantity || 0);
+      r.buyers.add(l.sales_entries.customer_id);
+    });
+    return [...byRegion.values()]
+      .map((r) => ({ ...r, buying: r.buyers.size, penetration: r.customers ? Math.round((r.buyers.size / r.customers) * 100) : 0 }))
+      .sort((a, b) => b.sales - a.sales || b.penetration - a.penetration);
+  }, [rows, rawCustomers, periodWindow]);
+
+  const totalSales = regions.reduce((s, r) => s + r.sales, 0);
+  const reached = regions.filter((r) => r.buying > 0).length;
+  const buyers = regions.reduce((s, r) => s + r.buying, 0);
+  const customers = regions.reduce((s, r) => s + r.customers, 0);
+  const top = regions[0];
+
+  const tip = ({ active, payload }) => {
+    if (!active || !payload?.length) return null;
+    const r = payload[0].payload;
+    return (
+      <div style={{ background: COLORS.navy, borderRadius: 10, padding: "9px 12px", color: "#fff", fontFamily: "Inter", fontSize: 12 }}>
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>{r.region}</div>
+        <div>Sales: {fmt(r.sales)}</div>
+        <div>Buying customers: {r.buying} of {r.customers} ({r.penetration}%)</div>
+        <div>Units: {Math.round(r.qty).toLocaleString("en-US")}</div>
+      </div>
+    );
+  };
+
+  let body;
+  if (error) body = <div style={{ fontSize: 12.5, color: COLORS.red }}>Could not load Fresh Produce sales: {error}</div>;
+  else if (loading) body = <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>Loading Fresh Produce sales...</div>;
+  else if (!rows || !rows.length) body = <div style={{ fontSize: 12.5, color: COLORS.textMuted, lineHeight: 1.6 }}>No Fresh Produce purchases recorded yet. They appear here when invoices containing Fresh Produce items are scanned.</div>;
+  else if (!totalSales) body = <div style={{ fontSize: 12.5, color: COLORS.textMuted, lineHeight: 1.6 }}>No Fresh Produce purchases in {periodLabel.toLowerCase()}. Try a longer period.</div>;
+  else body = (
+    <>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+        {[
+          ["Fresh Produce Sales", fmtShort(totalSales)],
+          ["Regions Reached", `${reached} of ${regions.length}`],
+          ["Buying Customers", `${buyers} of ${customers}`],
+          ["Top Region", top ? `${top.name}` : "—"],
+        ].map(([k, v]) => (
+          <div key={k} style={{ background: COLORS.greenSoft, borderRadius: 12, padding: "10px 12px" }}>
+            <div style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 600 }}>{k}</div>
+            <div style={{ fontFamily: "Manrope", fontWeight: 800, fontSize: 18, color: COLORS.green, marginTop: 2 }}>{v}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.6fr 1fr", gap: 14, alignItems: "start" }}>
+        <ResponsiveContainer width="100%" height={Math.max(260, regions.length * 26 + 30)}>
+          <BarChart data={regions} layout="vertical" margin={{ left: 4, right: 18, top: 4, bottom: 4 }}>
+            <CartesianGrid stroke={COLORS.line} horizontal={false} />
+            <XAxis type="number" tickFormatter={fmtShort} tick={{ fontSize: 10.5, fill: COLORS.textMuted, fontFamily: "Inter" }} axisLine={{ stroke: COLORS.line }} tickLine={false} />
+            <YAxis type="category" dataKey="name" width={84} interval={0} tick={{ fontSize: 11, fill: COLORS.textSecondary, fontFamily: "Inter" }} axisLine={false} tickLine={false} />
+            <Tooltip content={tip} cursor={{ fill: COLORS.greenSoft }} />
+            <Bar dataKey="sales" name="Fresh Produce sales" fill={COLORS.green} radius={[0, 5, 5, 0]} barSize={14} />
+          </BarChart>
+        </ResponsiveContainer>
+        <div style={{ maxHeight: Math.max(260, regions.length * 26 + 30), overflowY: "auto" }}>
+          <table>
+            <thead><tr><Th>Region</Th><Th align="right">Buying</Th><Th>Penetration</Th></tr></thead>
+            <tbody>
+              {[...regions].sort((a, b) => b.penetration - a.penetration || b.sales - a.sales).map((r) => (
+                <tr key={r.region}>
+                  <Td bold>{r.name}</Td>
+                  <Td align="right">{r.buying}/{r.customers}</Td>
+                  <Td><div style={{ minWidth: 90, display: "flex", alignItems: "center", gap: 6 }}><div style={{ flex: 1 }}><ProgressBar value={r.penetration} tone={r.penetration >= 60 ? "good" : r.penetration > 0 ? "warn" : "bad"} height={5} /></div><span style={{ fontSize: 11, fontWeight: 700, color: COLORS.textSecondary }}>{r.penetration}%</span></div></Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+
+  return (
+    <Card title="Fresh Produce - Regional Performance" subtitle={`Sales and customer penetration by atoll · ${periodLabel} · Apple, Orange, Grapes, Banana, Avocado, Carrot, Lime, Tomato, Cabbage`}>
+      {body}
+    </Card>
+  );
+}
+
+function ExecutivePage({ alerts, goRegion, drillCustomer, rawCustomers, periodWindow }) {
   const isMobile = useIsMobile();
   const { REGIONS, TOTAL_SALES, TOTAL_TARGET, TOTAL_GP, TOTAL_CUSTOMERS, ACTIVE_CUSTOMERS, AVG_PORTFOLIO, TREND, BRAND_DIST, SKUS, CATEGORY_SALES, ALL_CUSTOMERS, trendEstimated, periodLabel } = useContext(DataContext);
   const achievement = TOTAL_TARGET ? Math.round((TOTAL_SALES / TOTAL_TARGET) * 100) : 0;
   const gpPct = TOTAL_SALES ? Math.round((TOTAL_GP / TOTAL_SALES) * 1000) / 10 : 0;
   const outOfStockAlerts = SKUS.filter((s) => s.outOfStock > TOTAL_CUSTOMERS * 0.15).length;
-  const top10 = ALL_CUSTOMERS.slice(0, 10);
-  const bottom10 = [...ALL_CUSTOMERS].sort((a, b) => a.monthlySales - b.monthlySales).slice(0, 10);
+  // Optional brand filter for the Top/Bottom customer lists. "All brands"
+  // uses total sales as before; picking a brand (e.g. Fresh Produce) ranks
+  // customers by what they bought of that brand, from invoice line items.
+  const [brandFilter, setBrandFilter] = useState("all");
+  const brandOptions = useMemo(() => [...new Set(SKUS.map((s) => s.brand).filter(Boolean))].sort(), [SKUS]);
+  const brandSales = useBrandCustomerSales(brandFilter, rawCustomers, periodWindow);
+  const rankBase = brandFilter === "all"
+    ? ALL_CUSTOMERS
+    : ALL_CUSTOMERS.map((c) => ({ ...c, monthlySales: brandSales.map?.get(c.code) || 0 })).sort((a, b) => b.monthlySales - a.monthlySales);
+  const top10 = rankBase.slice(0, 10);
+  const bottom10 = [...rankBase].sort((a, b) => a.monthlySales - b.monthlySales).slice(0, 10);
+  const brandPicker = (
+    <select value={brandFilter} onChange={(e) => setBrandFilter(e.target.value)}
+      style={{ fontFamily: "Inter", fontSize: 11.5, fontWeight: 600, padding: "5px 8px", borderRadius: 8, border: `1px solid ${COLORS.line}`, background: "#fff", color: COLORS.textPrimary, maxWidth: 130 }}>
+      <option value="all">All brands</option>
+      {brandOptions.map((b) => <option key={b} value={b}>{b}</option>)}
+    </select>
+  );
+  const rankNote = brandFilter === "all" ? undefined : brandSales.loading ? "Loading..." : brandSales.error ? "Could not load brand sales" : `${brandFilter} purchases · ${periodLabel}`;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -1277,9 +1452,11 @@ function ExecutivePage({ alerts, goRegion, drillCustomer }) {
         </Card>
       </div>
 
+      <FreshProduceRegional rawCustomers={rawCustomers} periodWindow={periodWindow} periodLabel={periodLabel} />
+
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 14 }}>
-        <Card title="Top 10 Customers"><RankList list={top10} tone="good" onClick={drillCustomer} /></Card>
-        <Card title="Bottom 10 Customers"><RankList list={bottom10} tone="bad" onClick={drillCustomer} /></Card>
+        <Card title="Top 10 Customers" subtitle={rankNote} right={brandPicker}><RankList list={top10} tone="good" onClick={drillCustomer} /></Card>
+        <Card title="Bottom 10 Customers" subtitle={rankNote} right={brandPicker}><RankList list={bottom10} tone="bad" onClick={drillCustomer} /></Card>
         <Card title="Customer Locations" subtitle="By atoll — dot size = monthly sales"><AtollMap /></Card>
       </div>
 
