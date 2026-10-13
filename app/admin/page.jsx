@@ -3,6 +3,19 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import AdminDashboardClient from "./AdminDashboardClient";
 
+// The API returns at most 1000 rows per request, so large tables are read
+// in pages (ordered by a stable key so no row is skipped or repeated).
+async function fetchAll(build) {
+  const rows = [];
+  for (let from = 0; from < 200000; from += 1000) {
+    const { data, error } = await build().range(from, from + 999);
+    if (error) return { data: rows.length ? rows : null, error };
+    rows.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return { data: rows, error: null };
+}
+
 export default async function AdminPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -17,9 +30,9 @@ export default async function AdminPage() {
   // sales/GP/growth for any date range entirely client-side, with no
   // extra round-trip per period change.
   const [customersRes, salesEntriesRes, buyingStatusRes, monthlyTrendRes, skuRowsRes, stockRowsRes] = await Promise.all([
-    supabase.from("customers").select("*, profiles(full_name)"),
-    supabase.from("sales_entries").select("customer_id, entry_date, sale_amount, gp, portfolio_pct, next_visit_date"),
-    supabase.from("v_customer_buying_status").select("customer_code, is_buying, last_purchase_date"),
+    fetchAll(() => supabase.from("customers").select("*, profiles(full_name)").order("id")),
+    fetchAll(() => supabase.from("sales_entries").select("customer_id, entry_date, sale_amount, gp, portfolio_pct, next_visit_date").order("id")),
+    fetchAll(() => supabase.from("v_customer_buying_status").select("customer_code, is_buying, last_purchase_date").order("customer_code")),
     supabase.from("v_monthly_trend").select("month, sales, gp").order("month_sort"),
     supabase.from("skus").select("*").order("uploaded_at", { ascending: false }),
     supabase.from("warehouse_stock").select("*").order("uploaded_at", { ascending: false }),
