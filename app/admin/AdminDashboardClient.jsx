@@ -1150,7 +1150,7 @@ export default function App({ profile, rawCustomers, rawSalesEntries, buyingStat
             {page === "executive" && <ExecutivePage alerts={alerts} goRegion={goRegion} drillCustomer={drillCustomer} />}
             {page === "regional" && <RegionalPage region={region} drillRegion={drillRegion} />}
             {page === "area" && <AreaPage region={region} area={area} drillArea={drillArea} drillCustomer={drillCustomer} setSelectedRegion={setSelectedRegion} clearAreaDrilldown={clearAreaDrilldown} clearIslandOnly={clearIslandOnly} />}
-            {page === "customer" && <CustomerPage customer={customer} search={custSearch} drillCustomer={drillCustomer} clearCustomerDrilldown={clearCustomerDrilldown} statusFilter={statusFilter} />}
+            {page === "customer" && <CustomerPage customer={customer} customerUuid={customer ? rawCustomers.find((c) => c.customer_code === customer.code)?.id : null} periodWindow={periodWindow} periodLabel={PERIOD_OPTIONS.find((p) => p.key === periodKey)?.label || "This Month"} search={custSearch} drillCustomer={drillCustomer} clearCustomerDrilldown={clearCustomerDrilldown} statusFilter={statusFilter} />}
             {page === "product" && <ProductPage />}
             {page === "brand" && <BrandPage />}
             {page === "reps" && <RepsPage />}
@@ -1609,9 +1609,9 @@ function AreaPage({ region, area, drillArea, drillCustomer, setSelectedRegion, c
 /* ---------------------------------------------------------------
    CUSTOMER PAGE
 ------------------------------------------------------------------*/
-function CustomerPage({ customer, search, drillCustomer, clearCustomerDrilldown, statusFilter = "active" }) {
+function CustomerPage({ customer, customerUuid, periodWindow, periodLabel, search, drillCustomer, clearCustomerDrilldown, statusFilter = "active" }) {
   const isMobile = useIsMobile();
-  const { ALL_CUSTOMERS, LOST_CUSTOMERS, TOTAL_CUSTOMERS, TREND, BRAND_DIST } = useContext(DataContext);
+  const { ALL_CUSTOMERS, LOST_CUSTOMERS, TOTAL_CUSTOMERS, TREND } = useContext(DataContext);
   const baseList = statusFilter === "all" ? [...ALL_CUSTOMERS, ...LOST_CUSTOMERS] : ALL_CUSTOMERS;
   const filtered = search ? baseList.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()) || c.code.toLowerCase().includes(search.toLowerCase())) : baseList;
 
@@ -1641,7 +1641,6 @@ function CustomerPage({ customer, search, drillCustomer, clearCustomerDrilldown,
 
   const months = TREND.map((t) => t.month);
   const custTrend = months.map((m, i) => ({ month: m, sales: Math.round(customer.monthlySales * (0.8 + i * (0.2 / Math.max(1, months.length - 1)))) }));
-  const brandMix = BRAND_DIST.slice(0, 5).map((b) => ({ brand: b.brand, value: Math.round(10 + rnd() * 30) }));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -1674,29 +1673,147 @@ function CustomerPage({ customer, search, drillCustomer, clearCustomerDrilldown,
         <KpiCard label="Ranking" value={`#${customer.ranking}`} />
         <KpiCard label="Purchase Frequency" value={`${Math.max(1, Math.round(30 / (customer.daysSincePurchase + 3)))}/mo`} />
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.3fr 1fr", gap: 14 }}>
-        <Card title="Monthly Sales Trend">
-          <ResponsiveContainer width="100%" height={210}>
-            <LineChart data={custTrend}>
-              <CartesianGrid stroke={COLORS.line} vertical={false} />
-              <XAxis dataKey="month" tick={{ fontSize: 11, fill: COLORS.textMuted, fontFamily: "Inter" }} axisLine={{ stroke: COLORS.line }} tickLine={false} />
-              <YAxis tickFormatter={fmtShort} tick={{ fontSize: 10.5, fill: COLORS.textMuted, fontFamily: "Inter" }} axisLine={false} tickLine={false} width={62} />
-              <Tooltip content={<CustomTooltip />} />
-              <Line type="monotone" dataKey="sales" stroke={COLORS.blue} strokeWidth={2.5} dot={{ r: 3 }} />
-            </LineChart>
-          </ResponsiveContainer>
-        </Card>
-        <Card title="Brand Contribution">
-          <ResponsiveContainer width="100%" height={210}>
-            <PieChart>
-              <Pie data={brandMix} dataKey="value" nameKey="brand" innerRadius={45} outerRadius={78} paddingAngle={2}>
-                {brandMix.map((_, i) => <Cell key={i} fill={BRAND_PALETTE[i % BRAND_PALETTE.length]} />)}
-              </Pie>
-              <Tooltip content={<CustomTooltip valueFmt={(v) => v + "%"} />} />
-            </PieChart>
-          </ResponsiveContainer>
-        </Card>
-      </div>
+      <Card title="Monthly Sales Trend">
+        <ResponsiveContainer width="100%" height={210}>
+          <LineChart data={custTrend}>
+            <CartesianGrid stroke={COLORS.line} vertical={false} />
+            <XAxis dataKey="month" tick={{ fontSize: 11, fill: COLORS.textMuted, fontFamily: "Inter" }} axisLine={{ stroke: COLORS.line }} tickLine={false} />
+            <YAxis tickFormatter={fmtShort} tick={{ fontSize: 10.5, fill: COLORS.textMuted, fontFamily: "Inter" }} axisLine={false} tickLine={false} width={62} />
+            <Tooltip content={<CustomTooltip />} />
+            <Line type="monotone" dataKey="sales" stroke={COLORS.blue} strokeWidth={2.5} dot={{ r: 3 }} />
+          </LineChart>
+        </ResponsiveContainer>
+      </Card>
+      <CustomerPurchases customerUuid={customerUuid} periodWindow={periodWindow} periodLabel={periodLabel} />
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------
+   CUSTOMER PURCHASES — what this customer actually bought, from the
+   invoice line items (sale_line_items). Fetched on demand for the one
+   customer being viewed, so it stays fast however many invoices exist.
+------------------------------------------------------------------*/
+function CustomerPurchases({ customerUuid, periodWindow, periodLabel }) {
+  const isMobile = useIsMobile();
+  const [lines, setLines] = useState(null); // null = loading
+  const [error, setError] = useState(null);
+  const [scope, setScope] = useState("period"); // "period" | "all"
+
+  useEffect(() => {
+    if (!customerUuid) { setLines([]); return; }
+    let cancelled = false;
+    setLines(null); setError(null);
+    const supabase = createClient();
+    supabase
+      .from("sale_line_items")
+      .select("sales_entry_id, quantity, unit_price, line_total, sku_code_raw, skus(brand, category, sku, product_code), sales_entries!inner(customer_id, entry_date, invoice_number)")
+      .eq("sales_entries.customer_id", customerUuid)
+      .limit(5000)
+      .then(({ data, error: err }) => {
+        if (cancelled) return;
+        if (err) { setError(err.message); setLines([]); } else setLines(data || []);
+      });
+    return () => { cancelled = true; };
+  }, [customerUuid]);
+
+  const { products, brands, total, orders } = useMemo(() => {
+    const inScope = (lines || []).filter((l) => {
+      if (scope === "all") return true;
+      const d = new Date(l.sales_entries?.entry_date);
+      return d >= periodWindow.start && d <= periodWindow.end;
+    });
+    const byProduct = new Map();
+    const orderSet = new Set();
+    inScope.forEach((l) => {
+      const key = l.skus?.product_code || l.sku_code_raw || "unknown";
+      const cur = byProduct.get(key) || {
+        key, name: l.skus?.sku || l.sku_code_raw || "Unknown item", brand: l.skus?.brand || "Unmatched",
+        category: l.skus?.category || "—", qty: 0, value: 0, orders: new Set(), last: null,
+      };
+      cur.qty += Number(l.quantity || 0);
+      cur.value += Number(l.line_total || 0);
+      cur.orders.add(l.sales_entry_id);
+      orderSet.add(l.sales_entry_id);
+      const d = l.sales_entries?.entry_date;
+      if (d && (!cur.last || d > cur.last)) cur.last = d;
+      byProduct.set(key, cur);
+    });
+    const products = [...byProduct.values()].sort((a, b) => b.value - a.value);
+    const total = products.reduce((s, p) => s + p.value, 0);
+    const byBrand = new Map();
+    products.forEach((p) => byBrand.set(p.brand, (byBrand.get(p.brand) || 0) + p.value));
+    const brands = [...byBrand.entries()].map(([brand, value]) => ({ brand, value })).sort((a, b) => b.value - a.value);
+    return { products, brands, total, orders: orderSet.size };
+  }, [lines, scope, periodWindow]);
+
+  const toggle = (
+    <div style={{ display: "flex", gap: 6 }}>
+      {[["period", periodLabel], ["all", "All time"]].map(([k, label]) => (
+        <button key={k} onClick={() => setScope(k)}
+          style={{ padding: "5px 11px", borderRadius: 8, fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "Inter",
+            border: `1.5px solid ${scope === k ? COLORS.blue : COLORS.line}`, background: scope === k ? COLORS.blueSoft : "#fff", color: scope === k ? COLORS.blue : COLORS.textSecondary }}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
+  const subtitle = lines === null ? "Loading purchases..." : `${products.length} products · ${orders} invoice${orders === 1 ? "" : "s"} · ${fmt(total)} from invoice lines`;
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "2.2fr 1fr", gap: 14, alignItems: "start" }}>
+      <Card title="Products Purchased" subtitle={subtitle} right={toggle}>
+        {error && <div style={{ fontSize: 12.5, color: COLORS.red }}>Could not load purchases: {error}</div>}
+        {lines !== null && !error && !products.length && (
+          <div style={{ fontSize: 12.5, color: COLORS.textMuted, lineHeight: 1.6 }}>
+            No product-level purchases recorded {scope === "period" ? `in ${periodLabel.toLowerCase()}` : "for this customer"}. Purchases appear here when a rep scans an invoice for this customer.
+          </div>
+        )}
+        {products.length > 0 && (
+          <div style={{ maxHeight: 440, overflowY: "auto" }}>
+            <table>
+              <thead><tr><Th>Product</Th><Th>Brand</Th><Th>Category</Th><Th align="right">Invoices</Th><Th align="right">Qty</Th><Th align="right">Avg Price</Th><Th align="right">Value</Th><Th>Share</Th><Th>Last Bought</Th></tr></thead>
+              <tbody>
+                {products.map((p) => (
+                  <tr key={p.key}>
+                    <Td bold>{p.name}</Td><Td>{p.brand}</Td><Td>{p.category}</Td>
+                    <Td align="right">{p.orders.size}</Td>
+                    <Td align="right">{Math.round(p.qty * 100) / 100}</Td>
+                    <Td align="right">{p.qty ? fmt(p.value / p.qty) : "—"}</Td>
+                    <Td align="right" bold>{fmt(p.value)}</Td>
+                    <Td><div style={{ minWidth: 80, display: "flex", alignItems: "center", gap: 6 }}><div style={{ flex: 1 }}><ProgressBar value={total ? (p.value / total) * 100 : 0} height={5} /></div><span style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 600 }}>{total ? Math.round((p.value / total) * 100) : 0}%</span></div></Td>
+                    <Td>{p.last || "—"}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+      <Card title="Brand Contribution" subtitle="Share of purchased value">
+        {brands.length ? (
+          <>
+            <ResponsiveContainer width="100%" height={190}>
+              <PieChart>
+                <Pie data={brands} dataKey="value" nameKey="brand" innerRadius={42} outerRadius={74} paddingAngle={2}>
+                  {brands.map((_, i) => <Cell key={i} fill={BRAND_PALETTE[i % BRAND_PALETTE.length]} />)}
+                </Pie>
+                <Tooltip content={<CustomTooltip valueFmt={(v) => fmt(v)} />} />
+              </PieChart>
+            </ResponsiveContainer>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 6 }}>
+              {brands.map((b, i) => (
+                <div key={b.brand} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, color: COLORS.textSecondary }}>
+                  <span style={{ width: 9, height: 9, borderRadius: 3, background: BRAND_PALETTE[i % BRAND_PALETTE.length] }} />
+                  <span style={{ flex: 1, fontWeight: 600, color: COLORS.textPrimary }}>{b.brand}</span>
+                  <span>{total ? Math.round((b.value / total) * 100) : 0}%</span>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>No brand data for this selection.</div>}
+      </Card>
     </div>
   );
 }
