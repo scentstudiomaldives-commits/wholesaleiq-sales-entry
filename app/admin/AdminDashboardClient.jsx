@@ -1876,8 +1876,11 @@ function CustomerPurchases({ customerUuid, periodWindow, periodLabel }) {
   const [lines, setLines] = useState(null); // null = loading
   const [error, setError] = useState(null);
   const [scope, setScope] = useState("period"); // "period" | "all"
+  const [brandSel, setBrandSel] = useState("all");
+  const [catSel, setCatSel] = useState("all");
 
   useEffect(() => {
+    setBrandSel("all"); setCatSel("all");
     if (!customerUuid) { setLines([]); return; }
     let cancelled = false;
     setLines(null); setError(null);
@@ -1894,7 +1897,7 @@ function CustomerPurchases({ customerUuid, periodWindow, periodLabel }) {
     return () => { cancelled = true; };
   }, [customerUuid]);
 
-  const { products, brands, total, orders } = useMemo(() => {
+  const { products, brands, total, orders, brandOptions, catOptions, effBrand, effCat, totalProducts } = useMemo(() => {
     const inScope = (lines || []).filter((l) => {
       if (scope === "all") return true;
       const d = new Date(l.sales_entries?.entry_date);
@@ -1916,13 +1919,21 @@ function CustomerPurchases({ customerUuid, periodWindow, periodLabel }) {
       if (d && (!cur.last || d > cur.last)) cur.last = d;
       byProduct.set(key, cur);
     });
-    const products = [...byProduct.values()].sort((a, b) => b.value - a.value);
+    const allProducts = [...byProduct.values()].sort((a, b) => b.value - a.value);
+    // Dropdown options come from what this customer actually bought in scope.
+    const brandOptions = [...new Set(allProducts.map((p) => p.brand))].sort();
+    const catOptions = [...new Set(allProducts.filter((p) => brandSel === "all" || p.brand === brandSel).map((p) => p.category))].sort();
+    const effBrand = brandOptions.includes(brandSel) ? brandSel : "all";
+    const effCat = catOptions.includes(catSel) ? catSel : "all";
+    const products = allProducts.filter((p) => (effBrand === "all" || p.brand === effBrand) && (effCat === "all" || p.category === effCat));
     const total = products.reduce((s, p) => s + p.value, 0);
+    // Brand pie reflects the whole scope (before the brand filter) so the split stays visible.
     const byBrand = new Map();
-    products.forEach((p) => byBrand.set(p.brand, (byBrand.get(p.brand) || 0) + p.value));
+    allProducts.forEach((p) => byBrand.set(p.brand, (byBrand.get(p.brand) || 0) + p.value));
     const brands = [...byBrand.entries()].map(([brand, value]) => ({ brand, value })).sort((a, b) => b.value - a.value);
-    return { products, brands, total, orders: orderSet.size };
-  }, [lines, scope, periodWindow]);
+    const orders = new Set(products.flatMap((p) => [...p.orders])).size;
+    return { products, brands, total, orders, brandOptions, catOptions, effBrand, effCat, totalProducts: allProducts.length };
+  }, [lines, scope, periodWindow, brandSel, catSel]);
 
   const toggle = (
     <div style={{ display: "flex", gap: 6 }}>
@@ -1936,7 +1947,24 @@ function CustomerPurchases({ customerUuid, periodWindow, periodLabel }) {
     </div>
   );
 
-  const subtitle = lines === null ? "Loading purchases..." : `${products.length} products · ${orders} invoice${orders === 1 ? "" : "s"} · ${fmt(total)} from invoice lines`;
+  const subtitle = lines === null ? "Loading purchases..." : `${products.length}${products.length !== totalProducts ? ` of ${totalProducts}` : ""} products · ${orders} invoice${orders === 1 ? "" : "s"} · ${fmt(total)} from invoice lines`;
+
+  const selectStyle = { fontFamily: "Inter", fontSize: 12, fontWeight: 600, padding: "6px 9px", borderRadius: 8, border: `1px solid ${COLORS.line}`, background: "#fff", color: COLORS.textPrimary, minWidth: 130 };
+  const filters = lines !== null && totalProducts > 0 && (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+      <select aria-label="Filter by brand" value={effBrand} onChange={(e) => { setBrandSel(e.target.value); setCatSel("all"); }} style={selectStyle}>
+        <option value="all">All brands</option>
+        {brandOptions.map((b) => <option key={b} value={b}>{b}</option>)}
+      </select>
+      <select aria-label="Filter by category" value={effCat} onChange={(e) => setCatSel(e.target.value)} style={selectStyle}>
+        <option value="all">All categories</option>
+        {catOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+      </select>
+      {(effBrand !== "all" || effCat !== "all") && (
+        <button onClick={() => { setBrandSel("all"); setCatSel("all"); }} style={{ background: "none", border: "none", color: COLORS.blue, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "Inter" }}>Clear filters</button>
+      )}
+    </div>
+  );
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "2.2fr 1fr", gap: 14, alignItems: "start" }}>
@@ -1947,6 +1975,7 @@ function CustomerPurchases({ customerUuid, periodWindow, periodLabel }) {
             No product-level purchases recorded {scope === "period" ? `in ${periodLabel.toLowerCase()}` : "for this customer"}. Purchases appear here when a rep scans an invoice for this customer.
           </div>
         )}
+        {filters}
         {products.length > 0 && (
           <div style={{ maxHeight: 440, overflowY: "auto" }}>
             <table>
