@@ -21,6 +21,7 @@ export default async function EntryPage() {
 
   const profile = profileRes.data;
   if (profile?.role === "admin") redirect("/admin");
+  if (profile?.role === "president") redirect("/president");
 
   return (
     <EntryClient
