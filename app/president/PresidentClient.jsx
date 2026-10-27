@@ -39,6 +39,19 @@ function windowFor(key) {
   }
 }
 
+// The API returns at most 1,000 rows per request; this function returns one
+// row per island and item (about 1,800), so read it in pages.
+async function rpcAll(supabase, start, end) {
+  const out = [];
+  for (let from = 0; from < 20000; from += 1000) {
+    const { data, error } = await supabase.rpc("fresh_produce_by_island", { p_start: start, p_end: end }).range(from, from + 999);
+    if (error) return { data: null, error };
+    out.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return { data: out, error: null };
+}
+
 function weekWindows() {
   const now = new Date();
   const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
@@ -102,7 +115,7 @@ export default function PresidentClient({ profile }) {
     let live = true;
     setRows(null); setError(null);
     const [s, e] = windowFor(periodKey);
-    supabase.rpc("fresh_produce_by_island", { p_start: s, p_end: e }).then(({ data, error }) => {
+    rpcAll(supabase, s, e).then(({ data, error }) => {
       if (!live) return;
       if (error) setError(error.message); else setRows(data || []);
     });
@@ -112,7 +125,7 @@ export default function PresidentClient({ profile }) {
   useEffect(() => {
     let live = true;
     const w = weekWindows();
-    Promise.all([w.thisWeek, w.lastWeek, w.lastWeekSame].map(([a, b]) => supabase.rpc("fresh_produce_by_island", { p_start: a, p_end: b })))
+    Promise.all([w.thisWeek, w.lastWeek, w.lastWeekSame].map(([a, b]) => rpcAll(supabase, a, b)))
       .then(([t, l, ls]) => {
         if (!live) return;
         const err = t.error || l.error || ls.error;
