@@ -39,6 +39,33 @@ function windowFor(key) {
   }
 }
 
+function weekWindows() {
+  const now = new Date();
+  const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+  const monday = addDays(now, -((now.getDay() + 6) % 7));
+  const lastMonday = addDays(monday, -7);
+  const dayIdx = (now.getDay() + 6) % 7; // 0 = Monday
+  return {
+    thisWeek: [iso(monday), iso(now)],
+    lastWeek: [iso(lastMonday), iso(addDays(monday, -1))],
+    lastWeekSame: [iso(lastMonday), iso(addDays(lastMonday, dayIdx))],
+    thisLabel: `${iso(monday)} to ${iso(now)}`,
+    lastLabel: `${iso(lastMonday)} to ${iso(addDays(monday, -1))}`,
+    daysSoFar: dayIdx + 1,
+  };
+}
+const sumBy = (rows) => {
+  const m = new Map();
+  (rows || []).forEach((r) => m.set(r.atoll, (m.get(r.atoll) || 0) + Number(r.qty_uom)));
+  return m;
+};
+const chg = (cur, prev) => (prev > 0 ? Math.round(((cur - prev) / prev) * 100) : cur > 0 ? null : 0);
+function Chg({ v }) {
+  if (v === null) return <span style={{ color: COLORS.green, fontWeight: 700 }}>New</span>;
+  const c = v > 0 ? COLORS.green : v < 0 ? COLORS.red : COLORS.textMuted;
+  return <span style={{ color: c, fontWeight: 700 }}>{v > 0 ? "+" : ""}{v}%</span>;
+}
+
 const th = { textAlign: "left", fontSize: 11, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: 0.4, padding: "9px 12px", borderBottom: `1px solid ${COLORS.line}`, whiteSpace: "nowrap" };
 const td = { fontSize: 13, color: COLORS.textSecondary, padding: "10px 12px", borderBottom: `1px solid ${COLORS.line}`, whiteSpace: "nowrap" };
 const card = { background: COLORS.surface, border: `1px solid ${COLORS.line}`, borderRadius: 16, padding: "18px 20px", marginBottom: 16, overflowX: "auto" };
@@ -60,6 +87,7 @@ export default function PresidentClient({ profile }) {
   const supabase = useMemo(() => createClient(), []);
   const [periodKey, setPeriodKey] = useState("this_month");
   const [rows, setRows] = useState(null);
+  const [weekly, setWeekly] = useState(null);
   const [error, setError] = useState(null);
   const [open, setOpen] = useState({});
   const [narrow, setNarrow] = useState(false);
@@ -80,6 +108,24 @@ export default function PresidentClient({ profile }) {
     });
     return () => { live = false; };
   }, [periodKey, supabase]);
+
+  useEffect(() => {
+    let live = true;
+    const w = weekWindows();
+    Promise.all([w.thisWeek, w.lastWeek, w.lastWeekSame].map(([a, b]) => supabase.rpc("fresh_produce_by_island", { p_start: a, p_end: b })))
+      .then(([t, l, ls]) => {
+        if (!live) return;
+        const err = t.error || l.error || ls.error;
+        if (err) { setWeekly({ error: err.message }); return; }
+        const tm = sumBy(t.data), lm = sumBy(l.data), sm = sumBy(ls.data);
+        const names = [...new Set([...tm.keys(), ...lm.keys()])];
+        const list = names.map((a) => ({ atoll: a, name: shortAtoll(a), thisWeek: tm.get(a) || 0, lastWeek: lm.get(a) || 0, same: sm.get(a) || 0 }))
+          .sort((x, y) => y.thisWeek - x.thisWeek || y.lastWeek - x.lastWeek);
+        const sum = (k) => list.reduce((s, r) => s + r[k], 0);
+        setWeekly({ list, thisWeek: sum("thisWeek"), lastWeek: sum("lastWeek"), same: sum("same"), w });
+      });
+    return () => { live = false; };
+  }, [supabase]);
 
   const atolls = useMemo(() => {
     const aMap = new Map();
@@ -162,6 +208,46 @@ export default function PresidentClient({ profile }) {
                   <div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 800, fontSize: 20, color: COLORS.green, marginTop: 2 }}>{v}</div>
                 </div>
               ))}
+            </div>
+
+            <div style={card}>
+              <div style={{ fontFamily: "Manrope, sans-serif", fontSize: 15, fontWeight: 800, color: COLORS.textPrimary }}>Weekly Progress: Last Week to This Week</div>
+              {!weekly && <div style={{ fontSize: 13, color: COLORS.textMuted, marginTop: 8 }}>Loading...</div>}
+              {weekly && weekly.error && <div style={{ fontSize: 13, color: COLORS.red, marginTop: 8 }}>Could not load weekly progress: {weekly.error}</div>}
+              {weekly && !weekly.error && (
+                <>
+                  <div style={{ fontSize: 12, color: COLORS.textMuted, margin: "2px 0 12px" }}>
+                    Quantity supplied (KG). Last week {weekly.w.lastLabel}; this week {weekly.w.thisLabel} ({weekly.w.daysSoFar} day{weekly.w.daysSoFar > 1 ? "s" : ""} so far). The like-for-like column compares the same days of last week.
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr 1fr" : "repeat(4, 1fr)", gap: 12, marginBottom: 14 }}>
+                    {[
+                      ["Last Week (full)", fmtQty(weekly.lastWeek), null],
+                      ["This Week (so far)", fmtQty(weekly.thisWeek), null],
+                      ["Same Days Last Week", fmtQty(weekly.same), null],
+                      ["Progress (like-for-like)", null, chg(weekly.thisWeek, weekly.same)],
+                    ].map(([k, v, c]) => (
+                      <div key={k} style={{ background: COLORS.greenSoft, borderRadius: 12, padding: "12px 14px" }}>
+                        <div style={{ fontSize: 11.5, color: COLORS.textSecondary, fontWeight: 600 }}>{k}</div>
+                        <div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 800, fontSize: 20, color: COLORS.green, marginTop: 2 }}>{v !== null ? v : <Chg v={c} />}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead><tr><th style={th}>Atoll</th><th style={{ ...th, textAlign: "right" }}>Last week (KG)</th><th style={{ ...th, textAlign: "right" }}>This week so far (KG)</th><th style={{ ...th, textAlign: "right" }}>Same days last week (KG)</th><th style={{ ...th, textAlign: "right" }}>Progress</th></tr></thead>
+                    <tbody>
+                      {weekly.list.map((r) => (
+                        <tr key={r.atoll}>
+                          <td style={{ ...td, fontWeight: 700, color: COLORS.textPrimary }}>{r.atoll}</td>
+                          <td style={{ ...td, textAlign: "right" }}>{Math.round(r.lastWeek).toLocaleString("en-US")}</td>
+                          <td style={{ ...td, textAlign: "right" }}>{Math.round(r.thisWeek).toLocaleString("en-US")}</td>
+                          <td style={{ ...td, textAlign: "right" }}>{Math.round(r.same).toLocaleString("en-US")}</td>
+                          <td style={{ ...td, textAlign: "right" }}><Chg v={chg(r.thisWeek, r.same)} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
             </div>
 
             <div style={card}>
