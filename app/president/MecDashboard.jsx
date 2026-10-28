@@ -95,7 +95,7 @@ export default function MecDashboard({ supabase, narrow }) {
   const items = itemsRes.data || [];
 
   useEffect(() => {
-    if (!itemId && items.length) setItemId((items.find((i) => i.name === "Onion") || items[0]).id);
+    if (!itemId && items.length) setItemId((items.find((i) => i.name === "Red onion") || items[0]).id);
   }, [items, itemId]);
 
   const all = overview.data?.islands || [];
@@ -113,7 +113,7 @@ export default function MecDashboard({ supabase, narrow }) {
   return (
     <div>
       <div style={{ background: C.amberSoft, border: `1px solid #EBD3A8`, borderRadius: 10, padding: "8px 12px", fontSize: 12, color: "#7A5310", marginBottom: 10 }}>
-        TEST DATA ONLY. No verified STO figures. The 80 items, the 189-island list and the island categories are placeholders until confirmed.
+        TEST DATA ONLY. No verified STO figures. Only the 23 announced Ministry items are real names; the other 57 of the 80 items, the 189-island list and the island categories are placeholders until confirmed.
       </div>
 
       <div className="mec-noprint" style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
@@ -137,7 +137,12 @@ export default function MecDashboard({ supabase, narrow }) {
           {islandsOfAtoll.map((i) => <option key={i.atoll + "|" + i.island} value={i.atoll + "|" + i.island}>{fAtoll ? i.island : `${i.island} (${i.atoll.replace(/\s*\(.*?\)/g, "").replace(/ Atoll$/, "")})`}</option>)}
         </select>
         <select style={sel} value={itemId || ""} onChange={(e) => setItemId(Number(e.target.value))}>
-          {items.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
+          <optgroup label="Ministry list (23 announced items)">
+            {items.filter((i) => i.official).map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
+          </optgroup>
+          <optgroup label="Other items (placeholders)">
+            {items.filter((i) => !i.official).map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
+          </optgroup>
         </select>
         {(fCat || fAtoll || fIsland) && <button onClick={clearFilters} style={{ ...sel, cursor: "pointer", color: C.blue }}>Clear filters</button>}
         <button onClick={() => window.print()} style={{ ...sel, cursor: "pointer", marginLeft: "auto" }}>Print / save as PDF</button>
@@ -463,7 +468,7 @@ function PagePrices({ supabase, narrow, itemId, setItemId }) {
             <thead><tr><th style={th}>Item / unit</th><th style={{ ...th, textAlign: "right" }}>Greater Malé</th><th style={{ ...th, textAlign: "right" }}>Cities</th><th style={{ ...th, textAlign: "right" }}>Above 3,000</th><th style={{ ...th, textAlign: "right" }}>3,000 or below</th><th style={{ ...th, textAlign: "right" }}>Weekly</th><th style={{ ...th, textAlign: "right" }}>Monthly</th><th style={{ ...th, textAlign: "right" }}>Islands reporting</th></tr></thead>
             <tbody>{rows.map((r) => (
               <tr key={r.id} onClick={() => setItemId(r.id)} style={{ cursor: "pointer", background: r.id === itemId ? C.blueSoft : "transparent" }}>
-                <td style={{ ...td, color: C.text, fontWeight: 600 }}>{r.name} <span style={{ color: C.muted, fontWeight: 400 }}>/ {r.unit}</span></td>
+                <td style={{ ...td, color: C.text, fontWeight: 600 }}>{r.name} <span style={{ color: C.muted, fontWeight: 400 }}>/ {r.unit}</span>{r.official ? <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: C.green, background: C.greenSoft, borderRadius: 999, padding: "2px 7px" }}>Ministry list</span> : null}</td>
                 <td style={{ ...td, textAlign: "right" }}>{money(r.gm)}</td><td style={{ ...td, textAlign: "right" }}>{money(r.cities)}</td>
                 <td style={{ ...td, textAlign: "right" }}>{money(r.over3000)}</td><td style={{ ...td, textAlign: "right" }}>{money(r.under3000)}</td>
                 <td style={{ ...td, textAlign: "right" }}><Chg v={r.week_change_pct} /></td><td style={{ ...td, textAlign: "right" }}><Chg v={r.month_change_pct} /></td>
