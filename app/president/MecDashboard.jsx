@@ -1,5 +1,6 @@
 "use client";
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import "leaflet/dist/leaflet.css";
 
 /* ------------------------------------------------------------------
    Maldives Essential Commodities (MEC) dashboard - Presidents Office.
@@ -101,6 +102,7 @@ export default function MecDashboard({ supabase, narrow }) {
   const atolls = useMemo(() => [...new Set(all.map((i) => i.atoll))].sort(), [all]);
   const islandsOfAtoll = useMemo(() => all.filter((i) => !fAtoll || i.atoll === fAtoll).sort((a, b) => a.island.localeCompare(b.island) || a.atoll.localeCompare(b.atoll)), [all, fAtoll]);
   const filtered = useMemo(() => all.filter((i) => (!fCat || i.category === fCat) && (!fAtoll || i.atoll === fAtoll) && (!fIsland || i.island === fIsland)), [all, fCat, fAtoll, fIsland]);
+  const mapList = useMemo(() => all.filter((i) => !fCat || i.category === fCat), [all, fCat]);
 
   const selectIsland = (atoll, island) => { setFAtoll(atoll); setFIsland(island); setPage(1); };
   const clearFilters = () => { setFCat(""); setFAtoll(""); setFIsland(""); };
@@ -142,7 +144,7 @@ export default function MecDashboard({ supabase, narrow }) {
       </div>
 
       {overview.loading && <div style={{ ...box, fontSize: 13, color: C.muted }}>Loading...</div>}
-      {!overview.loading && page === 1 && <PageAvailability supabase={supabase} narrow={narrow} all={all} filtered={filtered} itemId={itemId} item={item} total={overview.data.items_total} selectIsland={selectIsland} fAtoll={fAtoll} fIsland={fIsland} />}
+      {!overview.loading && page === 1 && <PageAvailability supabase={supabase} narrow={narrow} all={all} filtered={filtered} mapList={mapList} itemId={itemId} item={item} total={overview.data.items_total} selectIsland={selectIsland} fAtoll={fAtoll} fIsland={fIsland} />}
       {!overview.loading && page === 2 && <PagePrices supabase={supabase} narrow={narrow} itemId={itemId} setItemId={setItemId} />}
       {!overview.loading && page === 3 && <PageAlerts supabase={supabase} narrow={narrow} all={all} itemId={itemId} item={item} meta={overview.data} />}
       <style>{`@media print { .mec-noprint { display: none !important; } body { background: #fff; } }`}</style>
@@ -151,7 +153,7 @@ export default function MecDashboard({ supabase, narrow }) {
 }
 
 /* ====================== PAGE 1 ====================== */
-function PageAvailability({ supabase, narrow, all, filtered, itemId, item, total, selectIsland, fAtoll, fIsland }) {
+function PageAvailability({ supabase, narrow, all, filtered, mapList, itemId, item, total, selectIsland, fAtoll, fIsland }) {
   const stat = (list) => ({
     n: list.length,
     all80: list.filter((i) => i.status === "green").length,
@@ -181,59 +183,120 @@ function PageAvailability({ supabase, narrow, all, filtered, itemId, item, total
         })}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1.2fr", gap: 14 }}>
-        <div style={box}>
-          <div style={h2}>National availability</div>
-          <div style={sub}>{nat.n} islands in the current selection</div>
-          <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginBottom: 12 }}>
-            <div><div style={{ fontFamily: "Manrope", fontWeight: 800, fontSize: 30, color: C.green }}>{nat.all80} / {nat.n}</div><div style={{ fontSize: 11.5, color: C.text2 }}>all {total} items available</div></div>
-            <div><div style={{ fontFamily: "Manrope", fontWeight: 800, fontSize: 30, color: C.green }}>{nat.agents} / {nat.n}</div><div style={{ fontSize: 11.5, color: C.text2 }}>operating STO agents</div></div>
-          </div>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: C.text }}>{nat.current} / {nat.n} current reports &nbsp;·&nbsp; {unknown} islands unknown</div>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: C.red, margin: "6px 0" }}>{prioShort} islands with priority-item shortages</div>
-          <div style={{ fontSize: 11, color: C.muted }}>Available means verified stock for purchase on the island. A report older than 48 hours does not count. Missing is not the same as zero stock.</div>
-        </div>
+      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "minmax(380px, 1fr) minmax(320px, 1fr)", gap: 14, alignItems: "start" }}>
         <div style={box}>
           <div style={h2}>Availability map</div>
-          <div style={sub}>Each dot is one island. Positions are approximate (schematic). Select a dot to open the island.</div>
-          <div style={{ display: "flex", gap: 14, flexWrap: narrow ? "wrap" : "nowrap" }}>
-            <IslandMap list={filtered.length ? filtered : all} selected={fIsland ? fAtoll + "|" + fIsland : ""} onPick={selectIsland} />
-            <div style={{ fontSize: 11.5, color: C.text2, display: "grid", gap: 6, alignContent: "start" }}>
-              {["green", "amber", "red", "grey"].map((s) => (
-                <div key={s}><Dot status={s} />{s === "green" ? `Green: all ${total} verified` : s === "amber" ? "Amber: partial" : s === "red" ? "Red: critical" : "Grey: no current report"}<span style={{ color: C.muted }}> ({filtered.filter((i) => i.status === s).length})</span></div>
-              ))}
-              <div style={{ color: C.muted, marginTop: 6 }}>Amber and red thresholds are proposals to be agreed.</div>
-            </div>
+          <div style={sub}>One dot per island. Hover for details; select a dot to open the island, and use + / - to zoom.</div>
+          <div style={{ fontSize: 11.5, color: C.text2, display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
+            {["green", "amber", "red", "grey"].map((s) => (
+              <span key={s}><Dot status={s} />{s === "green" ? `All ${total} verified` : s === "amber" ? "Partial" : s === "red" ? "Critical" : "No current report"} <span style={{ color: C.muted }}>({mapList.filter((i) => i.status === s).length})</span></span>
+            ))}
           </div>
+          <IslandMap list={mapList.length ? mapList : all} selected={fIsland ? fAtoll + "|" + fIsland : ""} focusAtoll={fAtoll} onPick={selectIsland} height={narrow ? 420 : 740} />
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>Amber and red thresholds are proposals to be agreed. Island positions are from a public dataset and must be checked against official coordinates.</div>
+        </div>
+        <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
+          <div style={box}>
+            <div style={h2}>National availability</div>
+            <div style={sub}>{nat.n} islands in the current selection</div>
+            <div style={{ display: "flex", gap: 28, flexWrap: "wrap", marginBottom: 12 }}>
+              <div><div style={{ fontFamily: "Manrope", fontWeight: 800, fontSize: 30, color: C.green }}>{nat.all80} / {nat.n}</div><div style={{ fontSize: 11.5, color: C.text2 }}>all {total} items available</div></div>
+              <div><div style={{ fontFamily: "Manrope", fontWeight: 800, fontSize: 30, color: C.green }}>{nat.agents} / {nat.n}</div><div style={{ fontSize: 11.5, color: C.text2 }}>operating STO agents</div></div>
+            </div>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: C.text }}>{nat.current} / {nat.n} current reports</div>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: C.text }}>{unknown} islands unknown</div>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: C.red, margin: "6px 0" }}>{prioShort} islands with priority-item shortages</div>
+            <div style={{ fontSize: 11, color: C.muted }}>Available means verified stock for purchase on the island. A report older than 48 hours does not count. Missing is not the same as zero stock.</div>
+          </div>
+          <CommodityPanel supabase={supabase} itemId={itemId} item={item} narrow={true} />
+          <SelectedIsland supabase={supabase} all={all} fAtoll={fAtoll} fIsland={fIsland} />
         </div>
       </div>
 
-      <CommodityPanel supabase={supabase} itemId={itemId} item={item} narrow={narrow} />
       <AtollTable supabase={supabase} list={filtered} total={total} selectIsland={selectIsland} fAtoll={fAtoll} fIsland={fIsland} narrow={narrow} />
     </div>
   );
 }
 
-function IslandMap({ list, selected, onPick }) {
-  const W = 300, H = 620;
-  const pts = useMemo(() => list.map((i) => {
-    const [lat, lng] = ATOLL_POS[i.atoll] || [3, 73];
-    const h1 = hash(i.atoll + i.island), h2n = hash(i.island + i.atoll + "y");
-    const x = 150 + (lng - 73.15) * 300 + ((h1 % 100) - 50) / 100 * 34;
-    const y = 18 + (7.2 - lat) * 78 + ((h2n % 100) - 50) / 100 * 34;
-    return { ...i, x, y };
-  }), [list]);
+function IslandMap({ list, selected, focusAtoll, onPick, height = 540 }) {
+  const holder = useRef(null);
+  const state = useRef({ map: null, layer: null, L: null });
+  const pick = useRef(onPick);
+  pick.current = onPick;
+  const [ready, setReady] = useState(false);
+  const [tilesFailed, setTilesFailed] = useState(false);
+
+  // create the map once (Leaflet is loaded in the browser only)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const L = (await import("leaflet")).default;
+      if (cancelled || !holder.current || state.current.map) return;
+      const map = L.map(holder.current, { scrollWheelZoom: false, zoomControl: true, minZoom: 5, maxZoom: 13, zoomSnap: 0.25, worldCopyJump: false });
+      const tiles = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+        subdomains: "abcd", maxZoom: 13, attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+      });
+      tiles.on("tileerror", () => setTilesFailed(true));
+      tiles.addTo(map);
+      map.setView([3.2, 73.2], 6);
+      state.current = { map, layer: L.layerGroup().addTo(map), L };
+      setReady(true);
+    })();
+    return () => { cancelled = true; if (state.current.map) { state.current.map.remove(); state.current = { map: null, layer: null, L: null }; } };
+  }, []);
+
+  // draw the islands whenever the list or selection changes
+  useEffect(() => {
+    const { map, layer, L } = state.current;
+    if (!ready || !map) return;
+    layer.clearLayers();
+    const pts = [];
+    list.forEach((i) => {
+      if (i.lat == null || i.lng == null) return;
+      const key = i.atoll + "|" + i.island;
+      const sel = selected === key;
+      const m = L.circleMarker([Number(i.lat), Number(i.lng)], {
+        radius: sel ? 10 : 6.5, color: sel ? "#0B2E52" : "#FFFFFF", weight: sel ? 3 : 1.5,
+        fillColor: STATUS[i.status], fillOpacity: 0.95,
+      });
+      m.bindTooltip(`<b>${i.island}</b> (${i.atoll.replace(/\s*\(.*?\)/g, "")})<br/>${i.fresh ? `${i.avail}/${i.total} items available` : "No current report"}<br/>${STATUS_LABEL[i.status]}`, { direction: "top", offset: [0, -6] });
+      m.on("click", () => pick.current(i.atoll, i.island));
+      m.addTo(layer);
+      pts.push([Number(i.lat), Number(i.lng)]);
+    });
+    if (selected) {
+      const s = list.find((i) => i.atoll + "|" + i.island === selected);
+      if (s && s.lat != null) { map.setView([Number(s.lat), Number(s.lng)], 11); return; }
+    }
+    const focus = focusAtoll ? list.filter((i) => i.atoll === focusAtoll && i.lat != null).map((i) => [Number(i.lat), Number(i.lng)]) : [];
+    const target = focus.length ? focus : pts;
+    if (target.length) map.fitBounds(target, { padding: [20, 20], maxZoom: focus.length ? 10.5 : 9.5 });
+  }, [ready, list, selected, focusAtoll]);
+
+  const missing = list.filter((i) => i.lat == null).length;
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", maxWidth: 260, height: "auto", background: "#F3F8FC", borderRadius: 12, flexShrink: 0 }} role="img" aria-label="Island availability map">
-      {pts.map((p) => {
-        const key = p.atoll + "|" + p.island;
-        return (
-          <circle key={key} cx={p.x} cy={p.y} r={selected === key ? 6 : 3.6} fill={STATUS[p.status]} stroke={selected === key ? C.navy : "#fff"} strokeWidth={selected === key ? 2 : 0.8} style={{ cursor: "pointer" }} onClick={() => onPick(p.atoll, p.island)}>
-            <title>{p.island} ({p.atoll}): {p.avail}/{p.total} items</title>
-          </circle>
-        );
-      })}
-    </svg>
+    <div style={{ position: "relative", width: "100%" }}>
+      <div ref={holder} style={{ height, width: "100%", borderRadius: 12, background: "#DCEBF5", overflow: "hidden", zIndex: 0 }} role="img" aria-label="Island availability map" />
+      {tilesFailed && <div style={{ position: "absolute", left: 10, bottom: 10, background: "rgba(255,255,255,0.92)", fontSize: 11, color: C.text2, padding: "4px 8px", borderRadius: 6, zIndex: 500 }}>Base map unavailable. Island positions are still shown.</div>}
+      {missing > 0 && <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>{missing} islands have no coordinates and are not shown on the map.</div>}
+    </div>
+  );
+}
+
+function SelectedIsland({ supabase, all, fAtoll, fIsland }) {
+  const row = fIsland ? all.find((i) => i.atoll === fAtoll && i.island === fIsland) : null;
+  if (!row) return (
+    <div style={{ ...box, color: C.muted, fontSize: 12.5 }}>
+      <div style={h2}>Island detail</div>
+      Select an island on the map or in the list below to see its unavailable items, shops, agents, prices and stock.
+    </div>
+  );
+  return (
+    <div style={box}>
+      <div style={h2}><Dot status={row.status} />{row.island} <span style={{ fontWeight: 500, color: C.muted, fontSize: 12 }}>{row.atoll} · {CAT_SHORT[row.category]}</span></div>
+      <div style={sub}>{row.fresh ? `${row.avail} of ${row.total} items verified available` : "No current verified report"} · last verified {fmtDT(row.last_verified)}</div>
+      <div style={{ fontSize: 12.5, color: C.text2, lineHeight: 1.6 }}><IslandDetail supabase={supabase} row={row} /></div>
+    </div>
   );
 }
 
