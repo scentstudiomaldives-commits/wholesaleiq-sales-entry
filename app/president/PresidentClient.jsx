@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "../../lib/supabaseClient";
+import MecDashboard from "./MecDashboard";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
 
 const COLORS = {
@@ -98,6 +99,7 @@ function Bar100({ value }) {
 export default function PresidentClient({ profile }) {
   const router = useRouter();
   const supabase = useMemo(() => createClient(), []);
+  const [view, setView] = useState("mec");
   const [periodKey, setPeriodKey] = useState("this_month");
   const [rows, setRows] = useState(null);
   const [weekly, setWeekly] = useState(null);
@@ -112,6 +114,7 @@ export default function PresidentClient({ profile }) {
   }, []);
 
   useEffect(() => {
+    if (view !== "fresh") return;
     let live = true;
     setRows(null); setError(null);
     const [s, e] = windowFor(periodKey);
@@ -120,9 +123,10 @@ export default function PresidentClient({ profile }) {
       if (error) setError(error.message); else setRows(data || []);
     });
     return () => { live = false; };
-  }, [periodKey, supabase]);
+  }, [periodKey, supabase, view]);
 
   useEffect(() => {
+    if (view !== "fresh") return;
     let live = true;
     const w = weekWindows();
     Promise.all([w.thisWeek, w.lastWeek, w.lastWeekSame].map(([a, b]) => rpcAll(supabase, a, b)))
@@ -138,7 +142,7 @@ export default function PresidentClient({ profile }) {
         setWeekly({ list, thisWeek: sum("thisWeek"), lastWeek: sum("lastWeek"), same: sum("same"), w });
       });
     return () => { live = false; };
-  }, [supabase]);
+  }, [supabase, view]);
 
   const atolls = useMemo(() => {
     const aMap = new Map();
@@ -193,21 +197,28 @@ export default function PresidentClient({ profile }) {
       <div style={{ background: COLORS.navy, color: "#fff", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div>
           <div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 800, fontSize: 16 }}>STO General Trading</div>
-          <div style={{ fontSize: 12, color: "#B9C9DC" }}>Fresh Produce - Atoll and Island Performance</div>
+          <div style={{ fontSize: 12, color: "#B9C9DC" }}>{view === "mec" ? "Maldives Essential Commodities Dashboard" : "Fresh Produce - Atoll and Island Performance"}</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <select value={periodKey} onChange={(e) => setPeriodKey(e.target.value)} style={{ padding: "7px 10px", borderRadius: 8, border: "none", fontSize: 12.5, fontWeight: 600 }}>
-            {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+          <select value={view} onChange={(e) => setView(e.target.value)} style={{ padding: "7px 10px", borderRadius: 8, border: "none", fontSize: 12.5, fontWeight: 600 }}>
+            <option value="mec">Essential commodities (MEC)</option>
+            <option value="fresh">Fresh Produce sales progress</option>
           </select>
+          {view === "fresh" && (
+            <select value={periodKey} onChange={(e) => setPeriodKey(e.target.value)} style={{ padding: "7px 10px", borderRadius: 8, border: "none", fontSize: 12.5, fontWeight: 600 }}>
+              {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+            </select>
+          )}
           <span style={{ fontSize: 12, color: "#B9C9DC" }}>{profile?.full_name}</span>
           <button onClick={signOut} style={{ background: "rgba(255,255,255,0.12)", border: "none", color: "#fff", fontSize: 11.5, fontWeight: 700, padding: "7px 12px", borderRadius: 8, cursor: "pointer" }}>Sign out</button>
         </div>
       </div>
 
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "20px 16px" }}>
-        {error && <div style={{ ...card, color: COLORS.red, fontSize: 13 }}>Could not load data: {error}</div>}
-        {!error && rows === null && <div style={{ ...card, color: COLORS.textMuted, fontSize: 13 }}>Loading...</div>}
-        {rows && (
+        {view === "mec" && <MecDashboard supabase={supabase} narrow={narrow} />}
+        {view === "fresh" && error && <div style={{ ...card, color: COLORS.red, fontSize: 13 }}>Could not load data: {error}</div>}
+        {view === "fresh" && !error && rows === null && <div style={{ ...card, color: COLORS.textMuted, fontSize: 13 }}>Loading...</div>}
+        {view === "fresh" && rows && (
           <>
             <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr 1fr" : "repeat(4, 1fr)", gap: 12, marginBottom: 16 }}>
               {[
