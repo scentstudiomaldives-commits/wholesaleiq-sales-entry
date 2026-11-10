@@ -5,7 +5,7 @@ import "leaflet/dist/leaflet.css";
 /* ------------------------------------------------------------------
    Maldives Essential Commodities (MEC) dashboard - Presidents Office.
    Three pages, following the Policy Office's sample:
-   01 Availability and coverage, 02 Prices and supply, 03 Alerts and reports.
+   01 Availability and coverage, 02 Supply and stock, 03 Alerts and reports.
    All data comes from the mec_* database functions (no table access).
 ------------------------------------------------------------------*/
 const C = {
@@ -117,7 +117,7 @@ export default function MecDashboard({ supabase, narrow }) {
       </div>
 
       <div className="mec-noprint" style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-        {[[1, "01 Availability and coverage"], [2, "02 Prices and supply"], [3, "03 Alerts and reports"]].map(([n, l]) => (
+        {[[1, "01 Availability and coverage"], [2, "02 Supply and stock"], [3, "03 Alerts and reports"]].map(([n, l]) => (
           <button key={n} onClick={() => setPage(n)} style={{ padding: "8px 14px", borderRadius: 999, border: "none", cursor: "pointer", fontSize: 12.5, fontWeight: 700, background: page === n ? C.navy : "#fff", color: page === n ? "#fff" : C.text2, boxShadow: page === n ? "none" : `inset 0 0 0 1px ${C.line}` }}>{l}</button>
         ))}
       </div>
@@ -150,9 +150,9 @@ export default function MecDashboard({ supabase, narrow }) {
 
       {overview.loading && <div style={{ ...box, fontSize: 13, color: C.muted }}>Loading...</div>}
       {!overview.loading && page === 1 && <PageAvailability supabase={supabase} narrow={narrow} all={all} filtered={filtered} mapList={mapList} itemId={itemId} item={item} total={overview.data.items_total} selectIsland={selectIsland} fAtoll={fAtoll} fIsland={fIsland} />}
-      {!overview.loading && page === 2 && <PagePrices supabase={supabase} narrow={narrow} itemId={itemId} setItemId={setItemId} />}
+      {!overview.loading && page === 2 && <PageSupply supabase={supabase} narrow={narrow} itemId={itemId} setItemId={setItemId} />}
       {!overview.loading && page === 3 && <PageAlerts supabase={supabase} narrow={narrow} all={all} itemId={itemId} item={item} meta={overview.data} />}
-      <style>{`@media print { .mec-noprint { display: none !important; } body { background: #fff; } }`}</style>
+      <style>{`.mec-basemap { filter: grayscale(1) contrast(0.85) brightness(1.08); } @media print { .mec-noprint { display: none !important; } body { background: #fff; } }`}</style>
     </div>
   );
 }
@@ -238,8 +238,8 @@ function IslandMap({ list, selected, focusAtoll, onPick, height = 540 }) {
       const L = (await import("leaflet")).default;
       if (cancelled || !holder.current || state.current.map) return;
       const map = L.map(holder.current, { scrollWheelZoom: false, zoomControl: true, minZoom: 5, maxZoom: 13, zoomSnap: 0.25, worldCopyJump: false });
-      const tiles = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
-        subdomains: "abcd", maxZoom: 13, attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+      const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 13, className: "mec-basemap", attribution: "&copy; OpenStreetMap contributors",
       });
       tiles.on("tileerror", () => setTilesFailed(true));
       tiles.addTo(map);
@@ -293,7 +293,7 @@ function SelectedIsland({ supabase, all, fAtoll, fIsland }) {
   if (!row) return (
     <div style={{ ...box, color: C.muted, fontSize: 12.5 }}>
       <div style={h2}>Island detail</div>
-      Select an island on the map or in the list below to see its unavailable items, shops, agents, prices and stock.
+      Select an island on the map or in the list below to see its unavailable items, shops, agents and stock.
     </div>
   );
   return (
@@ -355,7 +355,7 @@ function AtollTable({ supabase, list, total, selectIsland, fAtoll, fIsland, narr
   return (
     <div style={box}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
-        <div><div style={h2}>Atoll, island and item records</div><div style={sub}>Select an atoll, then an island, to see unavailable items, shops and agents, prices and stock.</div></div>
+        <div><div style={h2}>Atoll, island and item records</div><div style={sub}>Select an atoll, then an island, to see unavailable items, shops and agents, and stock.</div></div>
         <button className="mec-noprint" onClick={exportRows} style={{ ...sel, cursor: "pointer", color: C.blue }}>Download CSV</button>
       </div>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -415,17 +415,16 @@ function IslandDetail({ supabase, row }) {
         <div style={{ fontSize: 11, color: C.muted }}>Agent appointment is not evidence of availability. Availability comes from the verified reports above.</div>
       </div>
       <div>
-        <button onClick={() => setShowAll((s) => !s)} style={{ ...sel, cursor: "pointer", color: C.blue }}>{showAll ? "Show only items to follow up" : "Show all items with price and stock"}</button>
+        <button onClick={() => setShowAll((s) => !s)} style={{ ...sel, cursor: "pointer", color: C.blue }}>{showAll ? "Show only items to follow up" : "Show all items with stock"}</button>
         {shown.length > 0 && (
           <div style={{ maxHeight: 260, overflowY: "auto", marginTop: 8 }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr><th style={th}>Item</th><th style={th}>Status</th><th style={{ ...th, textAlign: "right" }}>Stock</th><th style={{ ...th, textAlign: "right" }}>Price (MVR)</th><th style={th}>Verified</th></tr></thead>
+              <thead><tr><th style={th}>Item</th><th style={th}>Status</th><th style={{ ...th, textAlign: "right" }}>Stock</th><th style={th}>Verified</th></tr></thead>
               <tbody>{shown.map((i) => (
                 <tr key={i.id}>
                   <td style={td}>{i.name} <span style={{ color: C.muted }}>/ {i.unit}</span></td>
                   <td style={{ ...td, color: !i.fresh ? C.grey : i.available ? C.green : C.red, fontWeight: 700 }}>{!i.fresh ? "No current report" : i.available ? "Available" : "Not available"}</td>
                   <td style={{ ...td, textAlign: "right" }}>{i.available && i.stock != null ? num(i.stock) : "-"}</td>
-                  <td style={{ ...td, textAlign: "right" }}>{money(i.price)}</td>
                   <td style={td}>{fmtDT(i.verified_at)}</td>
                 </tr>))}</tbody>
             </table>
@@ -437,65 +436,14 @@ function IslandDetail({ supabase, row }) {
 }
 
 /* ====================== PAGE 2 ====================== */
-function PagePrices({ supabase, narrow, itemId, setItemId }) {
-  const prices = useRpc(supabase, "mec_prices_overview", {}, []);
+function PageSupply({ supabase, narrow, itemId, setItemId }) {
   const supply = useRpc(supabase, "mec_supply", {}, []);
   const detail = useRpc(supabase, "mec_item_view", { p_item: itemId }, [itemId]);
-  const [q, setQ] = useState("");
-  const rows = (prices.data || []).filter((r) => !q || r.name.toLowerCase().includes(q.toLowerCase()));
   const d = detail.data;
-  const gm = d?.prices?.find((p) => p.category === "Greater Male");
-
-  const exportPrices = () => downloadCsv("prices_by_category.csv", [
-    ["Item", "Unit", "Greater Male", "Cities", "Above 3000", "3000 or below", "National average", "Weekly change %", "Monthly change %", "Islands reporting", "Islands with no price"],
-    ...(prices.data || []).map((r) => [r.name, r.unit, r.gm, r.cities, r.over3000, r.under3000, r.national, r.week_change_pct, r.month_change_pct, r.reporting, r.missing_islands]),
-  ]);
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
-      <div style={box}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-          <div><div style={h2}>Average retail prices across the four categories (MVR per standard unit)</div>
-            <div style={sub}>Current reports only. Same unit and pack size for each item; islands with no current price are counted separately. Select a row for detail.</div></div>
-          <div className="mec-noprint" style={{ display: "flex", gap: 8 }}>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search item" style={{ ...sel, width: 140 }} />
-            <button onClick={exportPrices} style={{ ...sel, cursor: "pointer", color: C.blue }}>Download CSV</button>
-          </div>
-        </div>
-        {prices.error && <div style={{ color: C.red, fontSize: 12.5 }}>{prices.error}</div>}
-        <div style={{ maxHeight: 360, overflowY: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><th style={th}>Item / unit</th><th style={{ ...th, textAlign: "right" }}>Greater Malé</th><th style={{ ...th, textAlign: "right" }}>Cities</th><th style={{ ...th, textAlign: "right" }}>Above 3,000</th><th style={{ ...th, textAlign: "right" }}>3,000 or below</th><th style={{ ...th, textAlign: "right" }}>Weekly</th><th style={{ ...th, textAlign: "right" }}>Monthly</th><th style={{ ...th, textAlign: "right" }}>Islands reporting</th></tr></thead>
-            <tbody>{rows.map((r) => (
-              <tr key={r.id} onClick={() => setItemId(r.id)} style={{ cursor: "pointer", background: r.id === itemId ? C.blueSoft : "transparent" }}>
-                <td style={{ ...td, color: C.text, fontWeight: 600 }}>{r.name} <span style={{ color: C.muted, fontWeight: 400 }}>/ {r.unit}</span>{r.official ? <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: C.green, background: C.greenSoft, borderRadius: 999, padding: "2px 7px" }}>Ministry list</span> : null}</td>
-                <td style={{ ...td, textAlign: "right" }}>{money(r.gm)}</td><td style={{ ...td, textAlign: "right" }}>{money(r.cities)}</td>
-                <td style={{ ...td, textAlign: "right" }}>{money(r.over3000)}</td><td style={{ ...td, textAlign: "right" }}>{money(r.under3000)}</td>
-                <td style={{ ...td, textAlign: "right" }}><Chg v={r.week_change_pct} /></td><td style={{ ...td, textAlign: "right" }}><Chg v={r.month_change_pct} /></td>
-                <td style={{ ...td, textAlign: "right" }}>{r.reporting}{r.missing_islands > 0 ? <span style={{ color: C.muted }}> ({r.missing_islands} no price)</span> : null}</td>
-              </tr>))}</tbody>
-          </table>
-        </div>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1.3fr 1fr", gap: 14 }}>
-        <div style={box}>
-          <div style={h2}>Price detail: {d?.item?.name || ""}</div>
-          <div style={sub}>Per island category. Difference is against Greater Malé. Shops are STO shops on islands reporting a current price.</div>
-          {detail.loading && <span style={{ color: C.muted }}>Loading...</span>}
-          {d && (
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr><th style={th}>Category</th><th style={{ ...th, textAlign: "right" }}>Average</th><th style={{ ...th, textAlign: "right" }}>Lowest</th><th style={{ ...th, textAlign: "right" }}>Highest</th><th style={{ ...th, textAlign: "right" }}>Week</th><th style={{ ...th, textAlign: "right" }}>Month</th><th style={{ ...th, textAlign: "right" }}>vs Malé</th><th style={{ ...th, textAlign: "right" }}>Islands / shops</th></tr></thead>
-              <tbody>{CATS.map((c) => {
-                const p = d.prices.find((x) => x.category === c) || {};
-                const wk = p.week_ago ? Math.round((p.avg_price / p.week_ago - 1) * 1000) / 10 : null;
-                const mo = p.month_ago ? Math.round((p.avg_price / p.month_ago - 1) * 1000) / 10 : null;
-                const vs = gm?.avg_price && c !== "Greater Male" && p.avg_price ? Math.round((p.avg_price / gm.avg_price - 1) * 1000) / 10 : null;
-                return (<tr key={c}><td style={{ ...td, color: C.text, fontWeight: 600 }}>{CAT_SHORT[c]}</td><td style={{ ...td, textAlign: "right" }}>{money(p.avg_price)}</td><td style={{ ...td, textAlign: "right" }}>{money(p.min_price)}</td><td style={{ ...td, textAlign: "right" }}>{money(p.max_price)}</td><td style={{ ...td, textAlign: "right" }}><Chg v={wk} /></td><td style={{ ...td, textAlign: "right" }}><Chg v={mo} /></td><td style={{ ...td, textAlign: "right" }}>{vs === null ? "-" : pctTxt(vs)}</td><td style={{ ...td, textAlign: "right" }}>{p.n_islands ?? 0} / {p.n_shops ?? 0}</td></tr>);
-              })}</tbody>
-            </table>
-          )}
-        </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 14 }}>
         <div style={box}>
           <div style={h2}>Country of production: {d?.item?.name || ""}</div>
           <div style={sub}>Share of supply by origin (placeholder data). A single source is flagged.</div>
@@ -551,7 +499,6 @@ function PagePrices({ supabase, narrow, itemId, setItemId }) {
 function PageAlerts({ supabase, narrow, all, itemId, item, meta }) {
   const alerts = useRpc(supabase, "mec_alerts", {}, []);
   const cov = useRpc(supabase, "mec_item_coverage_all", {}, []);
-  const prices = useRpc(supabase, "mec_prices_overview", {}, []);
   const A = alerts.data;
   const fresh = all.filter((i) => i.fresh > 0).length;
   const ag = all.filter((i) => i.agent_operating).length;
@@ -571,12 +518,8 @@ function PageAlerts({ supabase, narrow, all, itemId, item, meta }) {
     ["Atoll", "Island", "Category", "Status", "Items available", "Unavailable items"],
     ...all.map((i) => [i.atoll, i.island, CAT_LABEL[i.category], STATUS_LABEL[i.status], `${i.avail}/${i.total}`, (i.missing || []).join("; ")]),
   ]);
-  const exportPrices = () => downloadCsv("prices_by_category.csv", [
-    ["Item", "Unit", "Greater Male", "Cities", "Above 3000", "3000 or below", "Weekly change %", "Monthly change %", "Islands reporting"],
-    ...(prices.data || []).map((r) => [r.name, r.unit, r.gm, r.cities, r.over3000, r.under3000, r.week_change_pct, r.month_change_pct, r.reporting]),
-  ]);
   const exportTickets = () => downloadCsv("gap_tickets.csv", [
-    ["Issue", "Affected", "Item", "Owner", "Deadline", "Status", "Raised by"], ...(A?.tickets || []).map((t) => [t.issue, t.affected, t.item || "", t.owner, t.deadline, t.status, t.auto ? "system" : "manual"]),
+    ["Issue", "Affected", "Item", "Team", "Assigned to", "Deadline", "Status", "Latest note", "Raised by"], ...(A?.tickets || []).map((t) => [t.issue, t.affected, t.item || "", t.owner, t.assignee || "", t.deadline, t.status, t.last_note || "", t.auto ? "system" : "manual"]),
   ]);
 
   return (
@@ -584,14 +527,14 @@ function PageAlerts({ supabase, narrow, all, itemId, item, meta }) {
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1.6fr 1fr", gap: 14 }}>
         <div style={box}>
           <div style={h2}>Corrective action register</div>
-          <div style={sub}>Tickets are raised automatically from the agreed thresholds (proposed: under 7 days of stock, price rise above 15% in a week) and tracked to resolution.</div>
+          <div style={sub}>Tickets are raised automatically from the agreed thresholds (proposed: under 7 days of stock) and tracked to resolution.</div>
           {alerts.error && <div style={{ color: C.red, fontSize: 12.5 }}>{alerts.error}</div>}
           {A && (
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr><th style={th}>Issue</th><th style={th}>Affected</th><th style={th}>Owner / deadline</th><th style={th}>Status</th></tr></thead>
+              <thead><tr><th style={th}>Issue</th><th style={th}>Affected</th><th style={th}>Assigned to / deadline</th><th style={th}>Status</th><th style={th}>Latest note</th></tr></thead>
               <tbody>{A.tickets.map((t) => (
-                <tr key={t.id}><td style={{ ...td, color: C.text, fontWeight: 600, whiteSpace: "normal" }}>{t.issue}</td><td style={td}>{t.affected}</td><td style={td}>{t.owner} / {fmtD(t.deadline)}</td>
-                  <td style={{ ...td, fontWeight: 700, color: statusColor[t.status] }}>{t.status}</td></tr>))}</tbody>
+                <tr key={t.id}><td style={{ ...td, color: C.text, fontWeight: 600, whiteSpace: "normal" }}>{t.issue}</td><td style={td}>{t.affected}</td><td style={td}>{t.assignee ? `${t.assignee} (${t.owner})` : (t.owner || "Unassigned")} / {fmtD(t.deadline)}</td>
+                  <td style={{ ...td, fontWeight: 700, color: statusColor[t.status] }}>{t.status}</td><td style={{ ...td, whiteSpace: "normal", maxWidth: 220 }}>{t.last_note || ""}</td></tr>))}</tbody>
             </table>
           )}
         </div>
@@ -624,7 +567,7 @@ function PageAlerts({ supabase, narrow, all, itemId, item, meta }) {
         <div style={box}>
           <div style={h2}>Alerts to configure</div>
           <ul style={{ margin: "6px 0 0", paddingLeft: 18, fontSize: 12.5, color: C.text2, lineHeight: 1.9 }}>
-            <li>Priority items unavailable</li><li>Stockout before next delivery</li><li>Price spikes and persistent shortages</li>
+            <li>Priority items unavailable</li><li>Stockout before next delivery</li><li>Persistent shortages</li>
             <li>Delayed deliveries and outdated reports</li><li>Weather and sea-state disruption (not yet connected)</li>
           </ul>
         </div>
@@ -636,7 +579,7 @@ function PageAlerts({ supabase, narrow, all, itemId, item, meta }) {
         <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(3, 1fr)", gap: 14 }}>
           {[["Islands and items", "Island names, categories, available and unavailable items, island coverage per item.", [["Islands and items", exportIslands], ["Coverage per item", exportCoverage]]],
             ["STO shops and agents", "Islands with shops, appointed agents and operating agents.", [["Shops and agents", exportShops]]],
-            ["Prices, origins and actions", "Prices across the four categories, gap tickets.", [["Prices", exportPrices], ["Gap tickets", exportTickets]]]].map(([t, d, btns]) => (
+            ["Actions", "Gap tickets and their status.", [["Gap tickets", exportTickets]]]].map(([t, d, btns]) => (
             <div key={t}><div style={{ fontWeight: 800, fontSize: 12.5, color: C.text }}>{t}</div><div style={{ fontSize: 11.5, color: C.muted, margin: "2px 0 8px" }}>{d}</div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{btns.map(([l, f]) => <button key={l} onClick={f} style={{ ...sel, cursor: "pointer", color: C.blue }}>{l} (CSV)</button>)}</div></div>))}
         </div>
